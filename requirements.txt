@@ -1,0 +1,7 @@
+# Updated requirements compatible with Python 3.12+
+
+numpy==2.3.4
+#opencv-python==4.11.0.86
+ultralytics==8.3.226
+matplotlib==3.10.7
+scipy==1.16.3

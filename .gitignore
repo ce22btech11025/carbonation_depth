@@ -1,0 +1,5 @@
+__pycache__
+*.jpg
+output/
+*.log
+sam2_b.pt
