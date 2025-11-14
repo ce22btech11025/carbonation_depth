@@ -46,7 +46,7 @@ class ConcreteAnalysisPipeline:
 
         if use_ocr:
             try:
-                self.calibrator = OCRCalibration(gpu=True)
+                self.calibrator = RulerCalibration(gpu=True)
                 print("✓ Using OCR-based calibration")
             except ImportError:
                 print("⚠ EasyOCR not available. Install: pip install easyocr")
