@@ -1,0 +1,28 @@
+============================================================
+CONCRETE BLOCK ANALYSIS REPORT
+Automatic Scale Calibration & Phenophthalein Detection
+============================================================
+
+AUTOMATIC CALIBRATION:
+ Scale Type: Yellow ruler with black cm markings
+ Detection: Automatic
+ Markings Found: 172
+ Samples Used: 4
+ Pixel/cm ratio: 296.0000 px/cm
+ Pixel/mm ratio: 29.6000 px/mm
+ Accuracy (±): 77.51 pixels
+
+CONCRETE BLOCK DIMENSIONS:
+ Width: 74.86 mm (7.49 cm)
+ Height: 73.85 mm (7.39 cm)
+ Area: 5357.53 mm² (53.58 cm²)
+ Perimeter: 301.86 mm (30.19 cm)
+
+PHENOPHTHALEIN ANALYSIS:
+ Total area: 14578.45 mm² (145.78 cm²)
+ Affected area: 0.00 mm² (0.00 cm²)
+ Unaffected area: 14578.45 mm² (145.78 cm²)
+ Affected percentage: 0.00%
+ Unaffected percentage: 100.00%
+
+============================================================
