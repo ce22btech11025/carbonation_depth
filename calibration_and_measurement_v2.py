@@ -1,7 +1,7 @@
-"""Calibration and Measurement Module - WITH SUB-PIXEL PRECISION
+"""Calibration and Measurement Module - FIXED MARKING DETECTION
 
-Automatically detects yellow scale with black markings and calculates pixel-to-mm ratio
-Uses advanced sub-pixel edge detection for high precision measurements
+Automatically detects yellow scale with ONLY primary black cm markings
+Uses smarter line clustering to find correct 1cm spacing
 
 """
 
@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 from scipy import optimize
+from sklearn.cluster import DBSCAN
 
 
 class CalibrationMeasurement:
@@ -18,98 +19,6 @@ class CalibrationMeasurement:
         self.pixel_to_cm_ratio = None
         self.measurements = {}
         self.scale_info = {}
-
-    def gaussian_1d(self, x, k, mu, sigma):
-        """1D Gaussian function for edge fitting"""
-        return k * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
-
-    def subpixel_edge_gaussian_fitting(self, gray_image: np.ndarray, 
-                                       edge_points: np.ndarray, 
-                                       window_size: int = 5) -> np.ndarray:
-        """Refine edge points to sub-pixel accuracy using Gaussian fitting
-
-        Args:
-            gray_image: Grayscale image
-            edge_points: Integer pixel edge coordinates (Nx2 array)
-            window_size: Window size for gradient sampling (default: 5)
-
-        Returns:
-            Sub-pixel refined edge coordinates
-        """
-        refined_points = []
-
-        for point in edge_points:
-            x, y = int(point[0]), int(point[1])
-
-            # Skip points too close to border
-            if (x < window_size or x >= gray_image.shape[1] - window_size or
-                y < window_size or y >= gray_image.shape[0] - window_size):
-                refined_points.append([x, y])
-                continue
-
-            # Calculate gradient direction
-            dx = cv2.Sobel(gray_image[y-1:y+2, x-1:x+2], cv2.CV_64F, 1, 0, ksize=3)[1, 1]
-            dy = cv2.Sobel(gray_image[y-1:y+2, x-1:x+2], cv2.CV_64F, 0, 1, ksize=3)[1, 1]
-
-            gradient_mag = np.sqrt(dx**2 + dy**2)
-            if gradient_mag < 1e-6:
-                refined_points.append([x, y])
-                continue
-
-            # Normalize gradient direction
-            dx /= gradient_mag
-            dy /= gradient_mag
-
-            # Sample along gradient direction
-            samples = []
-            positions = []
-            for i in range(-window_size, window_size + 1):
-                sample_x = x + i * dx
-                sample_y = y + i * dy
-
-                # Bilinear interpolation
-                if (0 <= sample_x < gray_image.shape[1] - 1 and 
-                    0 <= sample_y < gray_image.shape[0] - 1):
-                    ix, iy = int(sample_x), int(sample_y)
-                    fx, fy = sample_x - ix, sample_y - iy
-
-                    val = (gray_image[iy, ix] * (1 - fx) * (1 - fy) +
-                           gray_image[iy, ix + 1] * fx * (1 - fy) +
-                           gray_image[iy + 1, ix] * (1 - fx) * fy +
-                           gray_image[iy + 1, ix + 1] * fx * fy)
-
-                    samples.append(val)
-                    positions.append(i)
-
-            if len(samples) < 5:
-                refined_points.append([x, y])
-                continue
-
-            # Fit Gaussian to gradient profile
-            try:
-                # Initial parameters: amplitude, mean, std
-                p0 = [max(samples) - min(samples), 0, 2.0]
-                params, _ = optimize.curve_fit(
-                    self.gaussian_1d, 
-                    positions, 
-                    samples, 
-                    p0=p0,
-                    maxfev=100
-                )
-
-                # Extract sub-pixel offset
-                sub_pixel_offset = params[1]  # mu parameter
-
-                # Refine coordinates
-                refined_x = x + sub_pixel_offset * dx
-                refined_y = y + sub_pixel_offset * dy
-
-                refined_points.append([refined_x, refined_y])
-            except:
-                # If fitting fails, use original point
-                refined_points.append([x, y])
-
-        return np.array(refined_points)
 
     def detect_yellow_scale(self, image: np.ndarray, scale_mask: np.ndarray) -> Tuple[np.ndarray, Dict]:
         """Detect yellow scale region with black markings
@@ -152,18 +61,73 @@ class CalibrationMeasurement:
 
         return scale_region, detection_info
 
-    def detect_black_markings_subpixel(self, scale_region: np.ndarray, 
+    def cluster_marking_lines(self, lines_array: np.ndarray, 
+                              eps: float = 15.0,
+                              min_samples: int = 2) -> Dict:
+        """Cluster similar marking lines using DBSCAN
+
+        Groups lines that are close together (noise/fragments) into single markings
+
+        Args:
+            lines_array: Nx4 array of [x1,y1,x2,y2] line segments
+            eps: Distance threshold for clustering
+            min_samples: Minimum samples to form a cluster
+
+        Returns:
+            Dictionary with clustered line positions
+        """
+        if len(lines_array) == 0:
+            return {'clusters': [], 'positions': [], 'num_clusters': 0}
+
+        # Extract midpoints of lines
+        midpoints = np.array([
+            ((x1 + x2) / 2, (y1 + y2) / 2) 
+            for x1, y1, x2, y2 in lines_array
+        ])
+
+        # Cluster using DBSCAN (groups nearby lines)
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(midpoints)
+        labels = clustering.labels_
+
+        # Group lines by cluster
+        clusters = {}
+        for label, midpoint in zip(labels, midpoints):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(midpoint)
+
+        # Calculate cluster centers (these are the marking positions)
+        positions = []
+        for label in sorted(clusters.keys()):
+            if label >= 0:  # Ignore noise points (label = -1)
+                cluster_points = np.array(clusters[label])
+                center = np.mean(cluster_points, axis=0)
+                positions.append(center)
+
+        # Sort by x-coordinate
+        positions = sorted(positions, key=lambda p: p[0])
+
+        return {
+            'clusters': clusters,
+            'positions': positions,
+            'num_clusters': len(positions),
+            'all_labels': labels
+        }
+
+    def detect_black_markings_improved(self, scale_region: np.ndarray, 
                                        scale_mask: np.ndarray) -> Dict:
-        """Detect black marking lines with SUB-PIXEL accuracy
+        """Detect primary BLACK marking lines with clustering
+
+        Uses improved morphology and clustering to find only major cm markings
 
         Args:
             scale_region: Cropped scale region
             scale_mask: Binary mask of scale
 
         Returns:
-            Dictionary with detected marking lines at sub-pixel positions
+            Dictionary with detected marking positions
         """
-        print("\n[Auto-Calibration] Detecting black markings with sub-pixel precision...")
+        print("\n[Auto-Calibration] Detecting cm markings with smart clustering...")
 
         # Convert to grayscale
         gray = cv2.cvtColor(scale_region, cv2.COLOR_BGR2GRAY)
@@ -172,164 +136,149 @@ class CalibrationMeasurement:
         # Threshold to get black markings
         _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
 
-        # Remove noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        # Remove noise with morphological operations
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
+        kernel_large = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 5))
+
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_small, iterations=1)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_small, iterations=1)
 
         # Apply edge detection
         edges = cv2.Canny(binary, 50, 150, apertureSize=3)
 
-        # Detect lines using Hough Transform (initial detection)
+        # Detect lines using Hough Transform
         lines = cv2.HoughLinesP(
             edges,
             rho=1,
             theta=np.pi/180,
-            threshold=30,
-            minLineLength=15,
-            maxLineGap=3
+            threshold=20,
+            minLineLength=20,  # Longer lines = primary markings
+            maxLineGap=5
         )
 
         if lines is None or len(lines) == 0:
             print("  ⚠ Warning: No marking lines detected!")
-            return {'lines': [], 'positions': [], 'num_lines': 0}
+            return {'positions': [], 'num_markings': 0, 'all_lines': []}
 
-        # Extract edge points for sub-pixel refinement
-        edge_points = np.column_stack(np.where(edges > 0))[:, ::-1]  # (x, y) format
+        # Extract and filter lines
+        lines_array = lines.reshape(-1, 4)
 
-        # Refine edge points to sub-pixel accuracy
-        print("  [Sub-pixel] Refining edge coordinates using Gaussian fitting...")
-        refined_edge_points = self.subpixel_edge_gaussian_fitting(gray, edge_points)
-
-        # Filter and cluster lines
-        marking_lines = []
-        marking_positions = []
-
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-
-            # Calculate line angle
+        # Filter for perpendicular lines
+        filtered_lines = []
+        for x1, y1, x2, y2 in lines_array:
             angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
-
-            # Keep perpendicular lines
             is_perpendicular = (70 <= angle <= 110) or (angle <= 20) or (angle >= 160)
 
             if is_perpendicular:
-                marking_lines.append((x1, y1, x2, y2))
+                filtered_lines.append([x1, y1, x2, y2])
 
-                # Find refined edge points near this line
-                line_center_x = (x1 + x2) / 2
-                line_center_y = (y1 + y2) / 2
+        if not filtered_lines:
+            print("  ⚠ Warning: No perpendicular lines found!")
+            return {'positions': [], 'num_markings': 0, 'all_lines': []}
 
-                # Find nearby refined points
-                distances = np.sqrt((refined_edge_points[:, 0] - line_center_x)**2 + 
-                                  (refined_edge_points[:, 1] - line_center_y)**2)
+        filtered_lines = np.array(filtered_lines)
 
-                if len(distances) > 0 and np.min(distances) < 10:
-                    nearest_idx = np.argmin(distances)
-                    refined_pos = refined_edge_points[nearest_idx]
-                    marking_positions.append(tuple(refined_pos))
-                else:
-                    marking_positions.append((line_center_x, line_center_y))
+        print(f"  [Hough] Found {len(filtered_lines)} perpendicular line segments")
 
-        # Sort positions by x-coordinate
-        if marking_positions:
-            marking_positions = sorted(marking_positions, key=lambda p: p[0])
+        # CLUSTER SIMILAR LINES - THIS IS THE KEY!
+        cluster_info = self.cluster_marking_lines(filtered_lines, eps=20.0, min_samples=1)
+
+        print(f"  [Clustering] Grouped into {cluster_info['num_clusters']} primary markings")
 
         marking_info = {
-            'lines': marking_lines,
-            'positions': marking_positions,
-            'num_lines': len(marking_lines),
+            'lines': filtered_lines,
+            'positions': cluster_info['positions'],
+            'num_markings': cluster_info['num_clusters'],
             'edges': edges,
             'binary': binary,
-            'refined_edge_points': refined_edge_points
+            'clusters': cluster_info['clusters']
         }
-
-        print(f"  ✓ Detected {len(marking_lines)} black marking lines")
-        print(f"  ✓ Sub-pixel refinement applied to {len(refined_edge_points)} edge points")
 
         return marking_info
 
-    def calculate_cm_spacings_ransac(self, marking_positions: List[Tuple[float, float]],
-                                     num_samples: int = 4, 
-                                     ransac_threshold: float = 2.0) -> Dict:
-        """Calculate pixel spacing with RANSAC outlier rejection
+    def calculate_cm_spacings_robust(self, marking_positions: List[Tuple[float, float]],
+                                     num_samples: int = None) -> Dict:
+        """Calculate pixel-to-cm ratio using ALL consecutive markings
+
+        Uses robust statistics (median, IQR-based filtering)
 
         Args:
-            marking_positions: List of (x, y) sub-pixel positions
-            num_samples: Number of samples to use
-            ransac_threshold: RANSAC inlier threshold in pixels
+            marking_positions: List of (x, y) positions of primary markings
+            num_samples: Number of samples to use (None = use all)
 
         Returns:
             Dictionary with robust spacing measurements
         """
-        print(f"\n[Auto-Calibration] Calculating pixel-to-cm ratio with RANSAC...")
-
         if len(marking_positions) < 2:
             print("  ⚠ Warning: Not enough markings detected!")
             return {'spacings': [], 'average_px_per_cm': 0, 'std_dev': 0}
 
-        # Calculate all consecutive spacings
+        print(f"\n[Auto-Calibration] Analyzing {len(marking_positions)} primary markings...")
+
+        # Calculate ALL consecutive spacings
         spacings = []
-        spacing_pairs = []
+        for i in range(len(marking_positions) - 1):
+            pos1 = marking_positions[i]
+            pos2 = marking_positions[i + 1]
 
-        max_samples = min(num_samples, len(marking_positions) - 1)
+            # Euclidean distance
+            distance_px = np.sqrt((pos2[0] - pos1[0])**2 + (pos2[1] - pos1[1])**2)
+            spacings.append(distance_px)
+            print(f"  Sample {i+1}: Mark {i} to {i+1} = {distance_px:.4f} pixels (1 cm)")
 
-        for i in range(max_samples):
-            if i + 1 < len(marking_positions):
-                pos1 = marking_positions[i]
-                pos2 = marking_positions[i + 1]
+        spacings = np.array(spacings)
 
-                # Sub-pixel distance calculation
-                distance_px = np.sqrt((pos2[0] - pos1[0])**2 + (pos2[1] - pos1[1])**2)
-                spacings.append(distance_px)
-                spacing_pairs.append((i, i+1, distance_px))
-                print(f"  Sample {i+1}: Mark {i} to {i+1} = {distance_px:.4f} pixels (1 cm)")
+        # Use median and IQR for robust estimation
+        median_spacing = np.median(spacings)
+        q1 = np.percentile(spacings, 25)
+        q3 = np.percentile(spacings, 75)
+        iqr = q3 - q1
 
-        if not spacings:
-            return {'spacings': [], 'average_px_per_cm': 0, 'std_dev': 0}
+        # Identify outliers using IQR method
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
 
-        # RANSAC outlier rejection
-        spacings_array = np.array(spacings)
-        median_spacing = np.median(spacings_array)
+        inliers = (spacings >= lower_bound) & (spacings <= upper_bound)
+        inlier_spacings = spacings[inliers]
+        outlier_spacings = spacings[~inliers]
 
-        # Compute absolute deviations
-        abs_deviations = np.abs(spacings_array - median_spacing)
-
-        # Identify inliers (within threshold)
-        inliers = abs_deviations <= ransac_threshold
-        inlier_spacings = spacings_array[inliers]
-
-        if len(inlier_spacings) == 0:
-            inlier_spacings = spacings_array
-
-        # Calculate final statistics
-        final_px_per_cm = np.mean(inlier_spacings)
-        std_dev = np.std(inlier_spacings)
-        median_px_per_cm = np.median(inlier_spacings)
+        # Final estimation using median of inliers (most robust)
+        final_px_per_cm = np.median(inlier_spacings) if len(inlier_spacings) > 0 else median_spacing
+        std_dev = np.std(inlier_spacings) if len(inlier_spacings) > 0 else np.std(spacings)
 
         spacing_info = {
-            'spacings': spacings,
-            'spacing_pairs': spacing_pairs,
-            'average_px_per_cm': np.mean(spacings),
+            'spacings': spacings.tolist(),
+            'all_spacings_count': len(spacings),
+            'inlier_count': np.sum(inliers),
+            'outlier_count': np.sum(~inliers),
+            'outlier_indices': np.where(~inliers)[0].tolist(),
             'median_px_per_cm': median_spacing,
-            'std_dev': np.std(spacings),
-            'ransac_inliers': np.sum(inliers),
-            'ransac_outliers': np.sum(~inliers),
-            'filtered_px_per_cm': final_px_per_cm,
-            'filtered_std_dev': std_dev,
-            'num_samples': len(spacings)
+            'mean_px_per_cm': np.mean(spacings),
+            'final_px_per_cm': final_px_per_cm,
+            'std_dev': std_dev,
+            'q1': q1,
+            'q3': q3,
+            'iqr': iqr,
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound
         }
 
-        print(f"\n  ✓ Pixel spacing analysis (with RANSAC):")
-        print(f"    Average: {np.mean(spacings):.4f} pixels/cm")
+        print(f"\n  [Statistics]:")
+        print(f"    All measurements: {spacing_info['all_spacings_count']}")
+        print(f"    Inliers: {spacing_info['inlier_count']}")
+        print(f"    Outliers: {spacing_info['outlier_count']}")
         print(f"    Median: {median_spacing:.4f} pixels/cm")
-        print(f"    RANSAC inliers: {np.sum(inliers)}/{len(spacings)}")
-        print(f"    Final (filtered): {final_px_per_cm:.4f} pixels/cm ± {std_dev:.4f}")
+        print(f"    Mean: {np.mean(spacings):.4f} pixels/cm")
+        print(f"    Final (IQR-filtered): {final_px_per_cm:.4f} pixels/cm")
+        print(f"    Std Dev (inliers): {std_dev:.4f} pixels")
+
+        if np.sum(~inliers) > 0:
+            print(f"    Outliers detected at indices: {np.where(~inliers)[0].tolist()}")
 
         return spacing_info
 
     def auto_calibrate_from_scale(self, image: np.ndarray, scale_mask: np.ndarray) -> Dict:
-        """MAIN METHOD: Automatically calibrate with SUB-PIXEL precision
+        """MAIN: Automatically calibrate with improved marking detection
 
         Args:
             image: Original preprocessed image
@@ -339,7 +288,7 @@ class CalibrationMeasurement:
             Dictionary with calibration results
         """
         print("\n" + "="*60)
-        print("AUTOMATIC SCALE CALIBRATION - SUB-PIXEL PRECISION")
+        print("AUTOMATIC SCALE CALIBRATION - IMPROVED")
         print("="*60)
 
         # Step 1: Detect yellow scale
@@ -349,49 +298,46 @@ class CalibrationMeasurement:
             print("\n  ⚠ Warning: Scale does not appear to be yellow!")
             print("    Continuing with detection anyway...")
 
-        # Step 2: Detect black markings with sub-pixel accuracy
-        marking_info = self.detect_black_markings_subpixel(scale_region, scale_mask)
+        # Step 2: Detect and cluster black markings
+        marking_info = self.detect_black_markings_improved(scale_region, scale_mask)
 
-        if marking_info['num_lines'] < 2:
-            print("\n  ✗ ERROR: Not enough marking lines detected!")
+        if marking_info['num_markings'] < 2:
+            print("\n  ✗ ERROR: Not enough primary markings detected!")
             return None
 
-        # Step 3: Calculate pixel-to-cm ratio with RANSAC
-        spacing_info = self.calculate_cm_spacings_ransac(
-            marking_info['positions'],
-            num_samples=min(4, marking_info['num_lines'] - 1)
-        )
+        # Step 3: Calculate pixel-to-cm ratio with robust statistics
+        spacing_info = self.calculate_cm_spacings_robust(marking_info['positions'])
 
-        if spacing_info['filtered_px_per_cm'] == 0:
+        if spacing_info['final_px_per_cm'] == 0:
             print("\n  ✗ ERROR: Could not calculate pixel-to-cm ratio!")
             return None
 
         # Store calibration results
-        self.pixel_to_cm_ratio = spacing_info['filtered_px_per_cm']
+        self.pixel_to_cm_ratio = spacing_info['final_px_per_cm']
         self.pixel_to_mm_ratio = self.pixel_to_cm_ratio / 10
 
         self.scale_info = {
             'scale_type': 'Yellow ruler with black cm markings',
-            'detection_method': 'Automatic with sub-pixel precision',
+            'detection_method': 'Improved clustering + IQR filtering',
             'yellow_percentage': yellow_info['yellow_percentage'],
-            'num_markings_detected': marking_info['num_lines'],
-            'samples_used': spacing_info['num_samples'],
+            'num_markings_detected': marking_info['num_markings'],
             'pixel_per_cm': self.pixel_to_cm_ratio,
             'pixel_per_mm': self.pixel_to_mm_ratio,
-            'std_deviation': spacing_info['filtered_std_dev'],
-            'ransac_inliers': spacing_info['ransac_inliers'],
-            'all_spacings': spacing_info['spacings']
+            'std_deviation': spacing_info['std_dev'],
+            'all_spacings': spacing_info['spacings'],
+            'inlier_count': spacing_info['inlier_count'],
+            'outlier_count': spacing_info['outlier_count']
         }
 
         print("\n" + "="*60)
-        print("CALIBRATION COMPLETE - SUB-PIXEL PRECISION")
+        print("CALIBRATION COMPLETE - IMPROVED")
         print("="*60)
-        print(f"✓ Method: Gaussian fitting + RANSAC")
-        print(f"✓ Markings detected: {marking_info['num_lines']}")
-        print(f"✓ RANSAC inliers: {spacing_info['ransac_inliers']}/{spacing_info['num_samples']}")
+        print(f"✓ Method: Clustering + IQR-based filtering")
+        print(f"✓ Primary markings: {marking_info['num_markings']}")
+        print(f"✓ Valid measurements: {spacing_info['inlier_count']}/{spacing_info['all_spacings_count']}")
         print(f"✓ Pixel-to-cm ratio: {self.pixel_to_cm_ratio:.6f} pixels/cm")
         print(f"✓ Pixel-to-mm ratio: {self.pixel_to_mm_ratio:.6f} pixels/mm")
-        print(f"✓ Precision: ±{spacing_info['filtered_std_dev']:.4f} pixels")
+        print(f"✓ Precision: ±{spacing_info['std_dev']:.4f} pixels")
         print("="*60 + "\n")
 
         return self.scale_info
@@ -407,13 +353,9 @@ class CalibrationMeasurement:
         Returns:
             Sub-pixel refined contour
         """
-        # Convert contour to corner format
         corners = contour.reshape(-1, 1, 2).astype(np.float32)
-
-        # Define termination criteria
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.001)
 
-        # Refine using cornerSubPix
         refined_corners = cv2.cornerSubPix(
             gray_image, 
             corners, 
@@ -427,7 +369,7 @@ class CalibrationMeasurement:
     def measure_concrete_block(self, concrete_boundaries: Dict,
                                 concrete_mask: np.ndarray,
                                 image: np.ndarray) -> Dict:
-        """Measure concrete block with SUB-PIXEL precision
+        """Measure concrete block with sub-pixel precision
 
         Args:
             concrete_boundaries: Dictionary with concrete boundary info
@@ -435,25 +377,24 @@ class CalibrationMeasurement:
             image: Original image (for sub-pixel refinement)
 
         Returns:
-            Dictionary with high-precision measurements
+            Dictionary with measurements
         """
         if self.pixel_to_mm_ratio is None:
             raise ValueError("Calibration not performed!")
 
-        print("\n[Measurement] Measuring concrete block with sub-pixel precision...")
+        print("\n[Measurement] Measuring concrete block...")
 
-        # Convert to grayscale for sub-pixel refinement
+        # Convert to grayscale for refinement
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Get contour and refine to sub-pixel accuracy
+        # Get refined contour
         contour = concrete_boundaries['contour']
         refined_contour = self.refine_contour_subpixel(contour, gray)
 
-        # Calculate sub-pixel area and perimeter
+        # Calculate measurements
         area_px = cv2.contourArea(refined_contour)
         perimeter_px = cv2.arcLength(refined_contour, closed=True)
 
-        # Bounding box from refined contour
         x_coords = refined_contour[:, 0]
         y_coords = refined_contour[:, 1]
         width_px = np.max(x_coords) - np.min(x_coords)
@@ -479,10 +420,10 @@ class CalibrationMeasurement:
             'perimeter_mm': perimeter_mm,
             'perimeter_cm': perimeter_mm / 10,
             'calibration_used': f'{self.pixel_to_cm_ratio:.4f} px/cm',
-            'measurement_precision': 'Sub-pixel (Gaussian + cornerSubPix)'
+            'measurement_precision': 'Sub-pixel (cornerSubPix)'
         }
 
-        print(f"✓ Concrete block measured (sub-pixel precision):")
+        print(f"✓ Concrete block measured:")
         print(f"  Dimensions: {width_mm:.3f} x {height_mm:.3f} mm")
         print(f"  Area: {area_mm2:.3f} mm² ({area_mm2/100:.3f} cm²)")
         print(f"  Perimeter: {perimeter_mm:.3f} mm")
@@ -556,9 +497,9 @@ class CalibrationMeasurement:
         if 'concrete_block' in self.measurements:
             m = self.measurements['concrete_block']
             text1 = f"Dims: {m['width_cm']:.2f} x {m['height_cm']:.2f} cm"
-            text2 = f"Method: {m['measurement_precision']}"
+            text2 = f"Area: {m['area_cm2']:.2f} cm²"
             cv2.putText(vis_image, text1, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(vis_image, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(vis_image, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         if 'phenophthalein_analysis' in self.measurements:
             pa = self.measurements['phenophthalein_analysis']
@@ -572,22 +513,22 @@ class CalibrationMeasurement:
         return vis_image
 
     def generate_report(self, output_path: str = "measurement_report.txt") -> str:
-        """Generate detailed measurement report"""
+        """Generate detailed report"""
         report_lines = [
             "="*60,
             "CONCRETE BLOCK ANALYSIS REPORT",
-            "Sub-Pixel Precision Measurement",
+            "Improved Calibration with Smart Clustering",
             "="*60,
             "",
-            "CALIBRATION (SUB-PIXEL PRECISION):",
+            "CALIBRATION (IMPROVED):",
         ]
 
         if self.scale_info:
             report_lines.extend([
                 f"  Scale Type: {self.scale_info['scale_type']}",
                 f"  Detection: {self.scale_info['detection_method']}",
-                f"  Markings Found: {self.scale_info['num_markings_detected']}",
-                f"  RANSAC Inliers: {self.scale_info['ransac_inliers']}",
+                f"  Primary Markings: {self.scale_info['num_markings_detected']}",
+                f"  Valid Samples: {self.scale_info['inlier_count']}/{self.scale_info['inlier_count'] + self.scale_info['outlier_count']}",
                 f"  Pixel/cm ratio: {self.scale_info['pixel_per_cm']:.6f} px/cm",
                 f"  Pixel/mm ratio: {self.scale_info['pixel_per_mm']:.6f} px/mm",
                 f"  Precision (±): {self.scale_info['std_deviation']:.4f} pixels",
@@ -597,7 +538,7 @@ class CalibrationMeasurement:
         if 'concrete_block' in self.measurements:
             m = self.measurements['concrete_block']
             report_lines.extend([
-                "CONCRETE BLOCK DIMENSIONS (SUB-PIXEL):",
+                "CONCRETE BLOCK DIMENSIONS:",
                 f"  Width: {m['width_mm']:.3f} mm ({m['width_cm']:.3f} cm)",
                 f"  Height: {m['height_mm']:.3f} mm ({m['height_cm']:.3f} cm)",
                 f"  Area: {m['area_mm2']:.3f} mm² ({m['area_cm2']:.3f} cm²)",
@@ -627,4 +568,4 @@ class CalibrationMeasurement:
 
 
 if __name__ == "__main__":
-    print("Sub-Pixel Calibration and Measurement Module")
+    print("Improved Calibration and Measurement Module")
