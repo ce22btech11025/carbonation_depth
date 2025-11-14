@@ -1,13 +1,10 @@
-"""Calibration and Measurement Module - RULER STRUCTURE AWARE
+"""Calibration and Measurement Module - SPACING PATTERN DETECTION
 
-Detects and calibrates using ONLY primary 1cm markings (large marks)
-Ignores secondary 0.2cm marks and inches side
-Uses smart clustering to identify correct marking positions
-
-Scale Structure Understood:
-- CM side: Primary marks every 1cm, 5 secondary marks (0.2cm) between them
-- INCHES side: Less frequent markings (IGNORED)
-- We detect ALL marks but use ONLY primary 1cm markings for calibration
+FIXED APPROACH: Uses spacing pattern to identify 1cm vs 0.2cm markings
+- Detect ALL line positions (x-coordinates)
+- Group by spacing: large gaps (~420px) = 1cm markings, small gaps (~84px) = 0.2cm
+- Primary pattern: 1cm mark, then 4 small marks (0.2cm each), then 1cm mark
+- Pattern: [BIG] [small] [small] [small] [small] [BIG] [small] ...
 
 """
 
@@ -67,60 +64,20 @@ class CalibrationMeasurement:
 
         return scale_region, detection_info
 
-    def identify_primary_markings(self, line_positions: np.ndarray, 
-                                   threshold_ratio: float = 0.6) -> Tuple[np.ndarray, np.ndarray]:
-        """Identify primary (1cm) vs secondary (0.2cm) markings by length
+    def detect_marking_positions(self, scale_region: np.ndarray, 
+                                  scale_mask: np.ndarray) -> Dict:
+        """Detect marking positions using edge-based approach
 
-        Primary markings are longer lines, secondary are shorter
-        Strategy: Sort by line length, take only the longest ones
-
-        Args:
-            line_positions: Nx2 array of line positions and lengths
-            threshold_ratio: Keep lines longer than threshold_ratio * max_length
-
-        Returns:
-            Tuple of (primary_positions, secondary_positions)
-        """
-        if len(line_positions) == 0:
-            return np.array([]), np.array([])
-
-        # Extract line lengths (stored as second column)
-        if line_positions.shape[1] >= 3:
-            lengths = line_positions[:, 2]
-        else:
-            lengths = np.ones(len(line_positions))
-
-        max_length = np.max(lengths)
-        threshold_length = threshold_ratio * max_length
-
-        # Identify primary vs secondary
-        is_primary = lengths >= threshold_length
-        primary = line_positions[is_primary]
-        secondary = line_positions[~is_primary]
-
-        print(f"  [Mark Classification]:")
-        print(f"    Total marks detected: {len(line_positions)}")
-        print(f"    Primary (1cm): {len(primary)} marks")
-        print(f"    Secondary (0.2cm): {len(secondary)} marks")
-        print(f"    Max line length: {max_length:.2f} pixels")
-        print(f"    Primary threshold: {threshold_length:.2f} pixels")
-
-        return primary, secondary
-
-    def detect_black_markings_by_length(self, scale_region: np.ndarray, 
-                                        scale_mask: np.ndarray) -> Dict:
-        """Detect black marking lines and classify by length
-
-        Uses line length to distinguish primary (1cm) from secondary (0.2cm) markings
+        Finds all vertical black line positions (x-coordinates)
 
         Args:
             scale_region: Cropped scale region
             scale_mask: Binary mask of scale
 
         Returns:
-            Dictionary with detected marking positions
+            Dictionary with marking positions
         """
-        print("\n[Auto-Calibration] Detecting markings by length classification...")
+        print("\n[Auto-Calibration] Detecting all marking positions...")
 
         # Convert to grayscale
         gray = cv2.cvtColor(scale_region, cv2.COLOR_BGR2GRAY)
@@ -130,156 +87,249 @@ class CalibrationMeasurement:
         _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
 
         # Remove noise
-        kernel_small = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_small, iterations=1)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_small, iterations=1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
 
-        # Apply edge detection
+        # Find vertical edges
         edges = cv2.Canny(binary, 50, 150, apertureSize=3)
 
-        # Detect lines using Hough Transform
+        # Use Hough to find lines
         lines = cv2.HoughLinesP(
             edges,
             rho=1,
             theta=np.pi/180,
-            threshold=15,
-            minLineLength=10,  # Detect both long and short lines
+            threshold=10,
+            minLineLength=5,  # SHORT: detect all marking points
             maxLineGap=5
         )
 
-        if lines is None or len(lines) == 0:
-            print("  ⚠ Warning: No marking lines detected!")
-            return {'positions': [], 'num_markings': 0, 'primary_markings': []}
+        if lines is None:
+            print("  ⚠ No lines detected!")
+            return {'positions': [], 'spacings': []}
 
-        # Extract and filter lines
-        lines_array = lines.reshape(-1, 4)
-
-        # Filter for perpendicular lines and calculate length
-        line_data = []
-        for x1, y1, x2, y2 in lines_array:
+        # Extract x-positions of vertical lines
+        marking_positions = []
+        for x1, y1, x2, y2 in lines.reshape(-1, 4):
             angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
-            is_perpendicular = (70 <= angle <= 110) or (angle <= 20) or (angle >= 160)
-
-            if is_perpendicular:
-                # Calculate line length
-                length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                # Calculate midpoint
+            # Vertical or nearly vertical
+            if (70 <= angle <= 110) or (angle <= 20) or (angle >= 160):
                 mid_x = (x1 + x2) / 2
-                mid_y = (y1 + y2) / 2
+                marking_positions.append(mid_x)
 
-                line_data.append([mid_x, mid_y, length])
+        if not marking_positions:
+            print("  ⚠ No vertical markings found!")
+            return {'positions': [], 'spacings': []}
 
-        if not line_data:
-            print("  ⚠ Warning: No perpendicular lines found!")
-            return {'positions': [], 'num_markings': 0, 'primary_markings': []}
+        # Cluster nearby x-positions (same marking detected multiple times)
+        marking_positions = np.array(marking_positions)
+        marking_positions = np.sort(marking_positions)
 
-        line_data = np.array(line_data)
-        print(f"  [Hough] Found {len(line_data)} perpendicular line segments")
+        # Use DBSCAN to cluster nearby positions
+        clustering = DBSCAN(eps=5, min_samples=1).fit(marking_positions.reshape(-1, 1))
+        labels = clustering.labels_
 
-        # IDENTIFY PRIMARY (1CM) MARKINGS BY LENGTH
-        primary_lines, secondary_lines = self.identify_primary_markings(
-            line_data, 
-            threshold_ratio=0.65  # Primary marks are ~65% of max length
-        )
+        # Get cluster centers (unique marking positions)
+        unique_positions = []
+        for label in np.unique(labels):
+            cluster_positions = marking_positions[labels == label]
+            center = np.mean(cluster_positions)
+            unique_positions.append(center)
 
-        # Use ONLY primary markings for calibration
-        # Cluster them to handle any fragments
-        primary_positions = []
-        if len(primary_lines) > 0:
-            # Sort by x-coordinate
-            primary_lines = primary_lines[np.argsort(primary_lines[:, 0])]
-            primary_positions = [(p[0], p[1]) for p in primary_lines]
+        unique_positions = sorted(unique_positions)
 
-        marking_info = {
-            'all_lines': line_data,
-            'primary_lines': primary_lines,
-            'secondary_lines': secondary_lines,
-            'positions': primary_positions,  # ONLY primary markings
-            'num_markings': len(primary_lines),
-            'edges': edges,
-            'binary': binary
-        }
+        print(f"  ✓ Detected {len(marking_positions)} line segments")
+        print(f"  ✓ Clustered into {len(unique_positions)} unique marking positions")
 
-        print(f"  ✓ Using ONLY primary markings: {len(primary_positions)} positions")
-
-        return marking_info
-
-    def calculate_spacing_from_primary_markings(self, marking_positions: List[Tuple[float, float]]) -> Dict:
-        """Calculate pixel spacing using ONLY primary 1cm markings
-
-        Each consecutive pair = 1cm spacing
-
-        Args:
-            marking_positions: List of (x, y) positions of primary 1cm markings
-
-        Returns:
-            Dictionary with spacing measurements
-        """
-        if len(marking_positions) < 2:
-            print("  ⚠ Warning: Not enough primary markings!")
-            return {'spacings': [], 'avg_spacing': 0}
-
-        print(f"\n[Calibration] Using {len(marking_positions)} primary markings (each = 1cm)...")
-
-        # Calculate ALL consecutive spacings (each = 1cm)
+        # Calculate all consecutive spacings
         spacings = []
-        for i in range(len(marking_positions) - 1):
-            pos1 = marking_positions[i]
-            pos2 = marking_positions[i + 1]
-
-            # Distance between consecutive 1cm markings
-            distance_px = np.sqrt((pos2[0] - pos1[0])**2 + (pos2[1] - pos1[1])**2)
-            spacings.append(distance_px)
-            print(f"  Mark {i} → {i+1}: {distance_px:.4f} pixels (represents 1cm)")
+        for i in range(len(unique_positions) - 1):
+            spacing = unique_positions[i + 1] - unique_positions[i]
+            spacings.append(spacing)
 
         spacings = np.array(spacings)
 
-        # Use robust statistics
+        return {
+            'positions': unique_positions,
+            'spacings': spacings,
+            'num_positions': len(unique_positions)
+        }
+
+    def identify_1cm_spacing_pattern(self, spacings: np.ndarray) -> Dict:
+        """Identify 1cm vs 0.2cm spacing pattern
+
+        Scale pattern: [1cm mark] [0.2cm] [0.2cm] [0.2cm] [0.2cm] [1cm mark]
+        Spacing: [BIG ~420px] [small ~84px] [small] [small] [small] [BIG ~420px]
+
+        Args:
+            spacings: Array of consecutive spacings (pixel distances)
+
+        Returns:
+            Dictionary with identified 1cm spacing
+        """
+        print("\n[Pattern Analysis] Identifying 1cm spacing pattern...")
+
+        if len(spacings) == 0:
+            return {'spacing_1cm': 0, 'spacing_02cm': 0}
+
+        # Find the two most common spacing values
+        # BIG gaps = 1cm marks, small gaps = 0.2cm marks
+        # Ratio should be ~5:1 (420/84 ≈ 5)
+
+        # Use histogram to find peaks
+        hist, bins = np.histogram(spacings, bins=50)
+
+        # Find peaks
+        peak_indices = []
+        for i in range(1, len(hist) - 1):
+            if hist[i] > hist[i-1] and hist[i] > hist[i+1]:
+                peak_indices.append(i)
+
+        if len(peak_indices) < 2:
+            # Only one spacing detected - assume it's all one type
+            print("  ⚠ Only one spacing pattern detected")
+            print(f"    Mean spacing: {np.mean(spacings):.2f} pixels")
+            print(f"    Std dev: {np.std(spacings):.2f} pixels")
+            return {'spacing_1cm': np.median(spacings), 'spacing_02cm': 0}
+
+        # Get the two largest peaks (biggest gaps first)
+        peak_values = [(bins[i] + bins[i+1]) / 2 for i in peak_indices[:2]]
+        peak_counts = [hist[i] for i in peak_indices[:2]]
+
+        # Sort by value (descending)
+        sorted_peaks = sorted(zip(peak_values, peak_counts), reverse=True)
+
+        large_spacing = sorted_peaks[0][0]  # Should be 1cm
+        small_spacing = sorted_peaks[1][0] if len(sorted_peaks) > 1 else large_spacing / 5
+
+        # Verify ratio (should be ~5:1)
+        ratio = large_spacing / small_spacing if small_spacing > 0 else 5
+
+        print(f"  [Spacing Detection]:")
+        print(f"    Large spacing (1cm): {large_spacing:.2f} pixels (count: {sorted_peaks[0][1]})")
+        if len(sorted_peaks) > 1:
+            print(f"    Small spacing (0.2cm): {small_spacing:.2f} pixels (count: {sorted_peaks[1][1]})")
+        print(f"    Ratio: {ratio:.2f}:1 (expected ~5:1)")
+
+        return {
+            'spacing_1cm': large_spacing,
+            'spacing_02cm': small_spacing,
+            'ratio': ratio
+        }
+
+    def validate_and_extract_1cm_markings(self, positions: np.ndarray, 
+                                          spacings: np.ndarray,
+                                          pattern_info: Dict) -> Tuple[List, float]:
+        """Extract ONLY 1cm marking positions using pattern
+
+        Uses the identified spacing to pick every 6th position (1 + 5 small = 6 positions)
+
+        Args:
+            positions: All marking x-positions
+            spacings: Consecutive spacing values
+            pattern_info: Dictionary with identified spacings
+
+        Returns:
+            Tuple of (primary_1cm_positions, average_1cm_spacing_pixels)
+        """
+        print("\n[Pattern Extraction] Extracting 1cm primary markings...")
+
+        spacing_1cm = pattern_info['spacing_1cm']
+        spacing_02cm = pattern_info['spacing_02cm']
+
+        if spacing_02cm == 0:
+            # No secondary marks detected, use all marks assuming they're 1cm
+            print("  ! No 0.2cm marks detected, using all marks as 1cm marks")
+            return list(positions), spacing_1cm
+
+        # Identify which spacings are "big" (1cm) vs "small" (0.2cm)
+        threshold = (spacing_1cm + spacing_02cm) / 2
+
+        primary_markings = [positions[0]]  # Start with first marking
+
+        for i in range(len(spacings)):
+            if spacings[i] > threshold:  # This is a 1cm spacing
+                # Next position after big spacing is a 1cm marking
+                primary_markings.append(positions[i + 1])
+
+        # Calculate average 1cm spacing
+        if len(primary_markings) > 1:
+            primary_spacings = []
+            for i in range(len(primary_markings) - 1):
+                sp = primary_markings[i + 1] - primary_markings[i]
+                primary_spacings.append(sp)
+
+            avg_1cm_spacing = np.median(primary_spacings)
+        else:
+            avg_1cm_spacing = spacing_1cm
+
+        print(f"  ✓ Extracted {len(primary_markings)} primary (1cm) markings")
+        print(f"  ✓ Average 1cm spacing: {avg_1cm_spacing:.4f} pixels")
+
+        return primary_markings, avg_1cm_spacing
+
+    def calculate_calibration_from_pattern(self, primary_markings: List, 
+                                           avg_spacing_px: float) -> Dict:
+        """Calculate final calibration from extracted 1cm markings
+
+        Args:
+            primary_markings: List of x-positions of 1cm markings
+            avg_spacing_px: Average pixel spacing between 1cm markings
+
+        Returns:
+            Dictionary with calibration info
+        """
+        print("\n[Calibration] Calculating from extracted primary markings...")
+
+        if len(primary_markings) < 2:
+            print("  ⚠ Not enough primary markings!")
+            return {'px_per_cm': 0, 'spacings': []}
+
+        # Calculate all consecutive 1cm spacings
+        spacings = []
+        for i in range(len(primary_markings) - 1):
+            sp = primary_markings[i + 1] - primary_markings[i]
+            spacings.append(sp)
+            print(f"  Mark {i} → {i+1}: {sp:.4f} pixels (= 1cm)")
+
+        spacings = np.array(spacings)
+
+        # Robust statistics
         median_spacing = np.median(spacings)
         mean_spacing = np.mean(spacings)
         std_dev = np.std(spacings)
 
-        # IQR-based outlier detection
+        # IQR filtering
         q1 = np.percentile(spacings, 25)
         q3 = np.percentile(spacings, 75)
         iqr = q3 - q1
 
-        lower_bound = q1 - 1.5 * iqr if iqr > 0 else median_spacing - 10
-        upper_bound = q3 + 1.5 * iqr if iqr > 0 else median_spacing + 10
+        lower = q1 - 1.5 * iqr if iqr > 0 else median_spacing - 20
+        upper = q3 + 1.5 * iqr if iqr > 0 else median_spacing + 20
 
-        inliers = (spacings >= lower_bound) & (spacings <= upper_bound)
-        inlier_count = np.sum(inliers)
-        outlier_count = np.sum(~inliers)
-
-        # Final estimation
-        final_px_per_cm = np.median(spacings[inliers]) if inlier_count > 0 else median_spacing
-        final_std = np.std(spacings[inliers]) if inlier_count > 0 else std_dev
-
-        spacing_info = {
-            'spacings': spacings.tolist(),
-            'all_count': len(spacings),
-            'inlier_count': inlier_count,
-            'outlier_count': outlier_count,
-            'mean': mean_spacing,
-            'median': median_spacing,
-            'final_px_per_cm': final_px_per_cm,
-            'std_dev': final_std,
-            'q1': q1,
-            'q3': q3,
-            'iqr': iqr
-        }
+        inliers = (spacings >= lower) & (spacings <= upper)
+        final_spacing = np.median(spacings[inliers]) if np.sum(inliers) > 0 else median_spacing
+        final_std = np.std(spacings[inliers]) if np.sum(inliers) > 0 else std_dev
 
         print(f"\n  [Statistics]:")
-        print(f"    Measurements: {spacing_info['all_count']}")
-        print(f"    Inliers: {inlier_count}, Outliers: {outlier_count}")
+        print(f"    Measurements: {len(spacings)}")
         print(f"    Mean: {mean_spacing:.4f} px/cm")
         print(f"    Median: {median_spacing:.4f} px/cm")
-        print(f"    Final: {final_px_per_cm:.4f} px/cm ± {final_std:.4f}")
+        print(f"    Final (IQR-filtered): {final_spacing:.4f} px/cm")
+        print(f"    Std Dev: {final_std:.4f} pixels")
 
-        return spacing_info
+        return {
+            'px_per_cm': final_spacing,
+            'spacings': spacings.tolist(),
+            'all_count': len(spacings),
+            'inlier_count': np.sum(inliers),
+            'std_dev': final_std,
+            'mean': mean_spacing,
+            'median': median_spacing
+        }
 
     def auto_calibrate_from_scale(self, image: np.ndarray, scale_mask: np.ndarray) -> Dict:
-        """MAIN: Auto-calibrate using ONLY primary 1cm markings
+        """MAIN: Auto-calibrate using spacing pattern detection
 
         Args:
             image: Original preprocessed image
@@ -289,71 +339,75 @@ class CalibrationMeasurement:
             Dictionary with calibration results
         """
         print("\n" + "="*70)
-        print("AUTOMATIC SCALE CALIBRATION - LENGTH-BASED PRIMARY MARKING DETECTION")
+        print("AUTOMATIC SCALE CALIBRATION - SPACING PATTERN DETECTION")
         print("="*70)
 
         # Step 1: Detect yellow scale
         scale_region, yellow_info = self.detect_yellow_scale(image, scale_mask)
 
-        # Step 2: Detect markings by length (primary vs secondary)
-        marking_info = self.detect_black_markings_by_length(scale_region, scale_mask)
+        # Step 2: Detect all marking positions
+        marking_info = self.detect_marking_positions(scale_region, scale_mask)
 
-        if marking_info['num_markings'] < 2:
-            print("\n  ✗ ERROR: Not enough primary markings detected!")
-            print("  Try adjusting length threshold or check scale visibility")
+        if marking_info['num_positions'] < 3:
+            print("\n  ✗ ERROR: Not enough markings detected!")
             return None
 
-        # Step 3: Calculate calibration from PRIMARY markings ONLY
-        spacing_info = self.calculate_spacing_from_primary_markings(
-            marking_info['positions']
+        # Step 3: Identify spacing pattern (1cm vs 0.2cm)
+        pattern_info = self.identify_1cm_spacing_pattern(marking_info['spacings'])
+
+        # Step 4: Extract only 1cm primary markings
+        primary_markings, avg_spacing = self.validate_and_extract_1cm_markings(
+            np.array(marking_info['positions']),
+            marking_info['spacings'],
+            pattern_info
         )
 
-        if spacing_info['final_px_per_cm'] == 0:
-            print("\n  ✗ ERROR: Could not calculate calibration!")
+        if len(primary_markings) < 2:
+            print("\n  ✗ ERROR: Could not extract primary 1cm markings!")
+            return None
+
+        # Step 5: Calculate calibration
+        calib_info = self.calculate_calibration_from_pattern(primary_markings, avg_spacing)
+
+        if calib_info['px_per_cm'] == 0:
+            print("\n  ✗ ERROR: Calibration failed!")
             return None
 
         # Store results
-        self.pixel_to_cm_ratio = spacing_info['final_px_per_cm']
+        self.pixel_to_cm_ratio = calib_info['px_per_cm']
         self.pixel_to_mm_ratio = self.pixel_to_cm_ratio / 10
 
         self.scale_info = {
-            'scale_type': 'Yellow ruler (cm side): 1cm + 5×0.2cm marks',
-            'detection_method': 'Length-based primary marking classification',
-            'primary_markings_used': marking_info['num_markings'],
-            'secondary_markings_ignored': len(marking_info['secondary_lines']),
+            'scale_type': 'Yellow ruler (cm side): 1cm marks + 5×0.2cm marks',
+            'detection_method': 'Spacing pattern detection',
+            'all_markings_detected': marking_info['num_positions'],
+            'primary_1cm_markings': len(primary_markings),
             'pixel_per_cm': self.pixel_to_cm_ratio,
             'pixel_per_mm': self.pixel_to_mm_ratio,
-            'std_deviation': spacing_info['std_dev'],
-            'all_spacings': spacing_info['spacings'],
-            'inlier_count': spacing_info['inlier_count'],
-            'total_samples': spacing_info['all_count']
+            'std_deviation': calib_info['std_dev'],
+            'all_spacings': calib_info['spacings'],
+            'inlier_count': calib_info['inlier_count'],
+            'total_samples': calib_info['all_count']
         }
 
         print("\n" + "="*70)
-        print("CALIBRATION COMPLETE - PRIMARY MARKING DETECTION")
+        print("CALIBRATION COMPLETE - SPACING PATTERN")
         print("="*70)
-        print(f"✓ Scale: Yellow ruler with cm markings (ignoring inches)")
-        print(f"✓ Primary markings detected: {marking_info['num_markings']}")
-        print(f"✓ Secondary markings ignored: {len(marking_info['secondary_lines'])}")
-        print(f"✓ Valid measurements: {spacing_info['inlier_count']}/{spacing_info['all_count']}")
+        print(f"✓ Scale: Yellow ruler with cm markings")
+        print(f"✓ All markings detected: {marking_info['num_positions']}")
+        print(f"✓ Primary 1cm markings extracted: {len(primary_markings)}")
+        print(f"✓ Pattern: 1×1cm + 5×0.2cm marks")
+        print(f"✓ Valid measurements: {calib_info['inlier_count']}/{calib_info['all_count']}")
         print(f"✓ Pixel-to-cm ratio: {self.pixel_to_cm_ratio:.6f} pixels/cm")
         print(f"✓ Pixel-to-mm ratio: {self.pixel_to_mm_ratio:.6f} pixels/mm")
-        print(f"✓ Precision: ±{spacing_info['std_dev']:.4f} pixels")
+        print(f"✓ Precision: ±{calib_info['std_dev']:.4f} pixels")
         print("="*70 + "\n")
 
         return self.scale_info
 
     def refine_contour_subpixel(self, contour: np.ndarray, 
                                 gray_image: np.ndarray) -> np.ndarray:
-        """Refine contour to sub-pixel accuracy using cornerSubPix
-
-        Args:
-            contour: Integer pixel contour
-            gray_image: Grayscale image
-
-        Returns:
-            Sub-pixel refined contour
-        """
+        """Refine contour to sub-pixel accuracy using cornerSubPix"""
         corners = contour.reshape(-1, 1, 2).astype(np.float32)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.001)
 
@@ -370,16 +424,7 @@ class CalibrationMeasurement:
     def measure_concrete_block(self, concrete_boundaries: Dict,
                                 concrete_mask: np.ndarray,
                                 image: np.ndarray) -> Dict:
-        """Measure concrete block using calibrated ratio
-
-        Args:
-            concrete_boundaries: Dictionary with concrete boundary info
-            concrete_mask: Binary mask of concrete block
-            image: Original image
-
-        Returns:
-            Dictionary with measurements
-        """
+        """Measure concrete block using calibrated ratio"""
         if self.pixel_to_mm_ratio is None:
             raise ValueError("Calibration not performed!")
 
@@ -389,7 +434,6 @@ class CalibrationMeasurement:
         contour = concrete_boundaries['contour']
         refined_contour = self.refine_contour_subpixel(contour, gray)
 
-        # Calculate measurements
         area_px = cv2.contourArea(refined_contour)
         perimeter_px = cv2.arcLength(refined_contour, closed=True)
 
@@ -398,7 +442,6 @@ class CalibrationMeasurement:
         width_px = np.max(x_coords) - np.min(x_coords)
         height_px = np.max(y_coords) - np.min(y_coords)
 
-        # Convert to physical units
         width_mm = width_px / self.pixel_to_mm_ratio
         height_mm = height_px / self.pixel_to_mm_ratio
         area_mm2 = area_px / (self.pixel_to_mm_ratio ** 2)
@@ -422,7 +465,7 @@ class CalibrationMeasurement:
         }
 
         print(f"✓ Concrete block measured:")
-        print(f"  Dimensions: {width_mm:.3f} x {height_mm:.3f} mm ({width_cm:.2f} x {height_cm:.2f} cm)")
+        print(f"  Dimensions: {width_mm:.3f} x {height_mm:.3f} mm ({width_mm/10:.2f} x {height_mm/10:.2f} cm)")
         print(f"  Area: {area_mm2:.3f} mm² ({area_mm2/100:.3f} cm²)")
         print(f"  Perimeter: {perimeter_mm:.3f} mm")
 
@@ -515,18 +558,18 @@ class CalibrationMeasurement:
         report_lines = [
             "="*70,
             "CONCRETE BLOCK ANALYSIS REPORT",
-            "Primary Marking-Based Calibration",
+            "Spacing Pattern-Based Calibration",
             "="*70,
             "",
-            "CALIBRATION (PRIMARY MARKINGS ONLY):",
+            "CALIBRATION (SPACING PATTERN DETECTION):",
         ]
 
         if self.scale_info:
             report_lines.extend([
                 f"  Scale Type: {self.scale_info['scale_type']}",
                 f"  Detection: {self.scale_info['detection_method']}",
-                f"  Primary Markings Used: {self.scale_info['primary_markings_used']}",
-                f"  Secondary Markings Ignored: {self.scale_info['secondary_markings_ignored']}",
+                f"  All Markings Detected: {self.scale_info['all_markings_detected']}",
+                f"  Primary 1cm Markings: {self.scale_info['primary_1cm_markings']}",
                 f"  Valid Samples: {self.scale_info['inlier_count']}/{self.scale_info['total_samples']}",
                 f"  Pixel/cm ratio: {self.scale_info['pixel_per_cm']:.6f} px/cm",
                 f"  Pixel/mm ratio: {self.scale_info['pixel_per_mm']:.6f} px/mm",
@@ -567,4 +610,4 @@ class CalibrationMeasurement:
 
 
 if __name__ == "__main__":
-    print("Primary Marking-Based Calibration Module")
+    print("Spacing Pattern-Based Calibration Module")
