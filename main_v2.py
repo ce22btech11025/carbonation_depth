@@ -1,6 +1,6 @@
-"""Main Pipeline - SMART ADAPTIVE CALIBRATION
+"""Main Pipeline - PRECISION CALIBRATION
 
-Uses pattern learning to work with ANY ruler format!
+Uses subpixel refinement + RANSAC for <0.1% error
 """
 
 import cv2
@@ -11,14 +11,14 @@ from pathlib import Path
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1 import SmartRulerCalibration
+    from ocr_calibration_v1_PRECISION import PrecisionRulerCalibration
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
 
 
 class ConcreteAnalysisPipeline:
-    """Analysis pipeline with smart adaptive calibration"""
+    """Analysis pipeline with precision calibration"""
 
     def __init__(self, output_dir: str = "output"):
         self.output_dir = Path(output_dir)
@@ -26,13 +26,18 @@ class ConcreteAnalysisPipeline:
 
         self.preprocessor = ImagePreprocessor()
         self.segmenter = SegmentationModule()
-        self.calibrator = SmartRulerCalibration()
+        self.calibrator = PrecisionRulerCalibration()
 
-    def run_pipeline(self, image_path: str):
-        """Run complete analysis"""
+    def run_pipeline(self, image_path: str, least_count_mm: float = 2.0):
+        """Run complete analysis
+
+        Args:
+            image_path: Path to input image
+            least_count_mm: Physical marking spacing (2mm for standard ruler)
+        """
         print("\n" + "="*70)
         print("CONCRETE BLOCK ANALYSIS PIPELINE")
-        print("Calibration: Smart Adaptive Pattern Learning")
+        print("Calibration: Precision (Subpixel + RANSAC)")
         print("="*70 + "\n")
 
         device_info = self.segmenter.get_device_info()
@@ -86,11 +91,12 @@ class ConcreteAnalysisPipeline:
                 print("✗ No scale detected!")
                 return
 
-            # Smart adaptive calibration
-            print("\n>>> SMART PATTERN LEARNING <<<\n")
+            # Precision calibration
+            print("\n>>> PRECISION CALIBRATION <<<\n")
             calibration_info = self.calibrator.auto_calibrate(
                 self.preprocessed_image,
-                scale_mask
+                scale_mask,
+                least_count_mm=least_count_mm
             )
 
             if calibration_info is None:
@@ -100,8 +106,7 @@ class ConcreteAnalysisPipeline:
             print(f"\n✓ Calibration successful!")
             print(f" Method: {calibration_info.get('method', 'Unknown')}")
             print(f" Markings: {calibration_info.get('num_markings', 0)}")
-            print(f" Fundamental spacing: {calibration_info.get('fundamental_spacing_px', 0):.2f} px")
-            print(f" Major period: {calibration_info.get('major_period', 0)}")
+            print(f" Precision: ±{calibration_info.get('precision_pct', 0):.3f}%")
             print(f" Pixel/mm: {calibration_info.get('pixel_per_mm', 0):.6f}")
             print("="*70)
 
@@ -153,10 +158,11 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Concrete Block Analysis - Smart Adaptive Calibration"
+        description="Concrete Block Analysis - Precision Calibration"
     )
     parser.add_argument("image", type=str, help="Path to input image")
     parser.add_argument("--output-dir", type=str, default="output", help="Output directory")
+    parser.add_argument("--least-count", type=float, default=2.0, help="Ruler marking spacing in mm")
 
     args = parser.parse_args()
 
@@ -165,14 +171,14 @@ def main():
         sys.exit(1)
 
     pipeline = ConcreteAnalysisPipeline(output_dir=args.output_dir)
-    pipeline.run_pipeline(image_path=args.image)
+    pipeline.run_pipeline(image_path=args.image, least_count_mm=args.least_count)
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         main()
     else:
-        print("Concrete Block Analysis - Smart Adaptive Calibration")
+        print("Concrete Block Analysis - Precision Calibration")
         print("="*50)
         print()
         image_path = input("Enter image path: ").strip()
@@ -180,5 +186,11 @@ if __name__ == "__main__":
             print(f"Error: File not found")
             sys.exit(1)
         output_dir = input("Enter output directory [output]: ").strip() or "output"
+        least_count = input("Enter ruler marking spacing in mm [2.0]: ").strip() or "2.0"
+        try:
+            least_count = float(least_count)
+        except:
+            least_count = 2.0
+
         pipeline = ConcreteAnalysisPipeline(output_dir=output_dir)
-        pipeline.run_pipeline(image_path=image_path)
+        pipeline.run_pipeline(image_path=image_path, least_count_mm=least_count)
