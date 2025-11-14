@@ -66,7 +66,7 @@ class OCRCalibration:
             print("[OCR] Initializing PaddleOCR (most accurate for printed numbers)...")
             try:
                 # FIXED: PaddleOCR uses 'use_gpu' parameter (not 'use_gpu')
-                self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=gpu)
+                self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
                 self.ocr_engine = 'paddle'
                 print("  ✓ PaddleOCR initialized successfully")
             except Exception as e:
