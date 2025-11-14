@@ -1,13 +1,13 @@
-"""OCR-BASED CALIBRATION MODULE - Production Ready
+"""OCR-BASED CALIBRATION MODULE - WITH CM-ONLY FILTERING
 
-Reads ruler text (0, 1, 2, 3, ...) using OCR and calculates pixel-to-mm ratio
-Works for batch processing of multiple images
+Reads ruler text and filters to ONLY consider CM markings (top row)
+Ignores INCH markings (bottom row) and downward numbers
 
-Key advantages:
-- Direct measurement from known reference points (text labels)
-- Robust to scale mask errors
-- Multiple measurements per image
-- Fully automatic for batch processing
+Key improvements:
+- Detects both cm and inch rows using clustering
+- Filters to use only the CM row (upper/top)
+- Ignores all downward markings
+- More robust for dual-sided rulers
 """
 
 import cv2
@@ -21,9 +21,16 @@ except ImportError:
     EASYOCR_AVAILABLE = False
     print("Warning: EasyOCR not installed. Run: pip install easyocr")
 
+try:
+    from sklearn.cluster import KMeans
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: scikit-learn not installed. Run: pip install scikit-learn")
+
 
 class OCRCalibration:
-    """OCR-based scale calibration"""
+    """OCR-based scale calibration with CM-only filtering"""
 
     def __init__(self, gpu: bool = True):
         """Initialize OCR reader
@@ -84,11 +91,76 @@ class OCRCalibration:
         print(f"  ✓ Detected {len(detected_text)} scale numbers")
         return detected_text
 
+    def filter_cm_markings_only(self, detected_texts: List[Dict]) -> List[Dict]:
+        """Filter to keep only CM markings (ignore inch markings)
+
+        For dual-sided rulers (cm on top, inches on bottom):
+        - Cluster text by y-coordinate (vertical position)
+        - Keep only the topmost cluster (CM markings)
+        - Discard downward markings (inch markings)
+
+        Args:
+            detected_texts: List of all detected texts
+
+        Returns:
+            Filtered list with only CM markings
+        """
+        if len(detected_texts) < 2:
+            print("  ⚠ Not enough markings to filter")
+            return detected_texts
+
+        print("\n[Filtering] Separating CM from INCH markings...")
+
+        # Get y-coordinates
+        ys = np.array([item['y'] for item in detected_texts])
+
+        print(f"  Y-coordinates range: {ys.min():.1f} to {ys.max():.1f}")
+
+        # Method 1: Use K-means clustering if sklearn available
+        if SKLEARN_AVAILABLE and len(np.unique(ys)) > 2:
+            try:
+                km = KMeans(n_clusters=2, random_state=42, n_init=10)
+                km.fit(ys.reshape(-1, 1))
+                centers = km.cluster_centers_.flatten()
+
+                # CM row is typically at smaller y value (top of image)
+                cm_cluster = np.argmin(centers)
+                cm_y_center = centers[cm_cluster]
+                inch_y_center = centers[1 - cm_cluster]
+
+                print(f"  Cluster 1 (y={cm_y_center:.1f}): CM markings (top)")
+                print(f"  Cluster 2 (y={inch_y_center:.1f}): INCH markings (bottom)")
+
+                filtered_texts = [
+                    item for idx, item in enumerate(detected_texts)
+                    if km.labels_[idx] == cm_cluster
+                ]
+
+                print(f"  ✓ Kept {len(filtered_texts)} CM markings")
+                print(f"  ✗ Discarded {len(detected_texts) - len(filtered_texts)} inch markings")
+
+                return filtered_texts
+
+            except Exception as e:
+                print(f"  ⚠ Clustering failed: {e}. Using fallback method.")
+
+        # Method 2: Fallback - keep top half (simple y-threshold)
+        print("  Using y-coordinate threshold method...")
+        height = detected_texts[0]['y'] * 2  # Rough estimate of scale height
+        threshold_y = np.median(ys)  # Split at median
+
+        filtered_texts = [item for item in detected_texts if item['y'] <= threshold_y]
+
+        print(f"  ✓ Kept {len(filtered_texts)} CM markings (y <= {threshold_y:.1f})")
+        print(f"  ✗ Discarded {len(detected_texts) - len(filtered_texts)} inch markings (y > {threshold_y:.1f})")
+
+        return filtered_texts
+
     def calculate_calibration_from_ocr(self, detected_texts: List[Dict]) -> Optional[Dict]:
         """Calculate pixel-to-mm ratio from OCR detected text positions
 
         Args:
-            detected_texts: List of detected text with positions
+            detected_texts: List of detected text with positions (already filtered to CM)
 
         Returns:
             Calibration dictionary or None
@@ -97,7 +169,7 @@ class OCRCalibration:
             print("✗ Not enough text detected!")
             return None
 
-        print("\n[Calibration] Computing pixel-to-mm ratio from OCR...")
+        print("\n[Calibration] Computing pixel-to-mm ratio from CM markings...")
 
         # Parse text to numbers
         try:
@@ -114,7 +186,7 @@ class OCRCalibration:
                 return None
 
             numbers = sorted(numbers, key=lambda x: x[0])
-            print(f"  Detected numbers: {[n[0] for n in numbers]}")
+            print(f"  Detected CM numbers: {[n[0] for n in numbers]}")
 
             # Calculate spacings between consecutive numbers
             spacings_1cm = []
@@ -149,7 +221,7 @@ class OCRCalibration:
             px_per_mm = median_px_per_cm / 10.0
 
             calibration = {
-                'method': 'OCR-based scale text detection',
+                'method': 'OCR-based scale text detection (CM-only)',
                 'detected_numbers': [n[0] for n in numbers],
                 'num_measurements': len(spacings_1cm),
                 'median_px_per_cm': median_px_per_cm,
@@ -174,7 +246,7 @@ class OCRCalibration:
             return None
 
     def auto_calibrate_ocr(self, image: np.ndarray, scale_mask: np.ndarray) -> Optional[Dict]:
-        """Main OCR calibration method
+        """Main OCR calibration method with CM-only filtering
 
         Args:
             image: Original image
@@ -184,17 +256,24 @@ class OCRCalibration:
             Calibration dictionary or None
         """
         print("\n" + "="*70)
-        print("OCR-BASED SCALE CALIBRATION")
+        print("OCR-BASED SCALE CALIBRATION (CM-ONLY)")
         print("="*70)
 
         # Extract scale region
         scale_region = cv2.bitwise_and(image, image, mask=scale_mask)
 
-        # Detect text
+        # Detect ALL text
         detected_texts = self.detect_scale_text(scale_region)
 
         if not detected_texts:
             print("\n✗ Calibration failed: No text detected")
+            return None
+
+        # FILTER TO CM ONLY (removes inch markings)
+        detected_texts = self.filter_cm_markings_only(detected_texts)
+
+        if not detected_texts:
+            print("\n✗ Calibration failed: No CM markings after filtering")
             return None
 
         # Calculate calibration
@@ -210,7 +289,7 @@ class OCRCalibration:
         self.calibration_info = calibration
 
         print("\n" + "="*70)
-        print("✓ OCR CALIBRATION SUCCESSFUL")
+        print("✓ OCR CALIBRATION SUCCESSFUL (CM markings only)")
         print("="*70)
 
         return calibration
@@ -336,7 +415,7 @@ class OCRCalibration:
         """Generate report"""
         report_lines = [
             "="*70,
-            "OCR-BASED CALIBRATION REPORT",
+            "OCR-BASED CALIBRATION REPORT (CM-ONLY)",
             "="*70,
             ""
         ]
@@ -345,7 +424,7 @@ class OCRCalibration:
             report_lines.extend([
                 "CALIBRATION:",
                 f"  Method: {self.calibration_info['method']}",
-                f"  Detected numbers: {self.calibration_info['detected_numbers']}",
+                f"  Detected CM numbers: {self.calibration_info['detected_numbers']}",
                 f"  Measurements: {self.calibration_info['num_measurements']}",
                 f"  Median: {self.calibration_info['median_px_per_cm']:.4f} px/cm",
                 f"  Pixel/mm: {self.calibration_info['pixel_per_mm']:.6f}",
