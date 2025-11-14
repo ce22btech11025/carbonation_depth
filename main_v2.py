@@ -11,7 +11,7 @@ from pathlib import Path
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1_SMART import SmartRulerCalibration
+    from ocr_calibration_v1 import SmartRulerCalibration
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
