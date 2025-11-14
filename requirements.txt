@@ -33,6 +33,7 @@ ultralytics>=8.0.0  # SAM2 and YOLOv8
 
 # OCR (for automatic ruler text detection)
 easyocr>=1.6.0
+paddleocr
 
 # Optional: For faster OCR on GPU
 # cuda-toolkit  # System package, not pip

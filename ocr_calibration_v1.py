@@ -45,7 +45,7 @@ except ImportError:
     print("Warning: Tesseract not installed. Run: pip install pytesseract")
 
 
-class AdvancedOCRCalibration:
+class OCRCalibration:
     """Advanced OCR with multiple engines and preprocessing"""
 
     def __init__(self, ocr_engine: str = 'paddle', gpu: bool = True):
