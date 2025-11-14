@@ -1,70 +1,44 @@
-"""Main Pipeline Script - DIRECT MARKING DETECTION
+"""Main Pipeline - SMART ADAPTIVE CALIBRATION
 
-Complete concrete block analysis with:
-
-- GPU-accelerated segmentation
-- Direct ruler marking detection (no OCR)
-- High-precision measurements
-
-Usage:
-  python main_v2.py image.jpg
-
-No OCR dependency - uses image processing to detect ruler markings!
+Uses pattern learning to work with ANY ruler format!
 """
 
 import cv2
 import os
 import sys
-import argparse
 from pathlib import Path
 
-# Import custom modules
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1 import RulerCalibration
+    from ocr_calibration_v1_SMART import SmartRulerCalibration
 except ImportError as e:
     print(f"Error importing modules: {e}")
-    print("Make sure all module files are in the same directory.")
     sys.exit(1)
 
 
 class ConcreteAnalysisPipeline:
-    """Complete analysis pipeline with direct marking detection"""
+    """Analysis pipeline with smart adaptive calibration"""
 
     def __init__(self, output_dir: str = "output"):
-        """Initialize pipeline
-
-        Args:
-            output_dir: Output directory
-        """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
 
         self.preprocessor = ImagePreprocessor()
         self.segmenter = SegmentationModule()
-        self.calibrator = RulerCalibration()
-
-        self.original_image = None
-        self.preprocessed_image = None
-        self.segmentation_results = None
+        self.calibrator = SmartRulerCalibration()
 
     def run_pipeline(self, image_path: str):
-        """Run complete analysis
-
-        Args:
-            image_path: Path to input image
-        """
+        """Run complete analysis"""
         print("\n" + "="*70)
         print("CONCRETE BLOCK ANALYSIS PIPELINE")
-        print("Calibration Method: Direct Marking Detection (No OCR)")
+        print("Calibration: Smart Adaptive Pattern Learning")
         print("="*70 + "\n")
 
-        # Device info
         device_info = self.segmenter.get_device_info()
-        print(f"🖥️ Computing Device: {device_info['device'].upper()}")
+        print(f"🖥️ Device: {device_info['device'].upper()}")
         if device_info['device'] == 'cuda':
-            print(f" GPU: {device_info['device_name']}")
+            print(f"   GPU: {device_info['device_name']}")
         print()
 
         # STAGE 1: Preprocessing
@@ -84,38 +58,36 @@ class ConcreteAnalysisPipeline:
         print("[STAGE 2] GPU-Accelerated Segmentation...")
         print("-" * 40)
         try:
-            self.segmentation_results = self.segmenter.segment_and_extract(
+            segmentation_results = self.segmenter.segment_and_extract(
                 self.preprocessed_image
             )
 
-            if self.segmentation_results.get('masks'):
+            if segmentation_results.get('masks'):
                 self.segmenter.visualize_segmentation(
                     self.preprocessed_image,
-                    self.segmentation_results['masks'],
+                    segmentation_results['masks'],
                     output_path=str(self.output_dir / "02_segmentation.jpg")
                 )
 
-                for name, mask in self.segmentation_results.get('masks', {}).items():
+                for name, mask in segmentation_results.get('masks', {}).items():
                     cv2.imwrite(str(self.output_dir / f"mask_{name}.jpg"), mask)
 
             print("✓ Stage 2 complete\n")
         except Exception as e:
             print(f"✗ Stage 2 failed: {e}")
-            import traceback
-            traceback.print_exc()
             return
 
         # STAGE 3: Calibration & Measurement
         print("[STAGE 3] Calibration & Measurement...")
         print("-" * 40)
         try:
-            scale_mask = self.segmentation_results.get('masks', {}).get('scale')
+            scale_mask = segmentation_results.get('masks', {}).get('scale')
             if scale_mask is None:
                 print("✗ No scale detected!")
                 return
 
-            # Calibration using direct marking detection
-            print("\n>>> STARTING DIRECT MARKING DETECTION <<<\n")
+            # Smart adaptive calibration
+            print("\n>>> SMART PATTERN LEARNING <<<\n")
             calibration_info = self.calibrator.auto_calibrate(
                 self.preprocessed_image,
                 scale_mask
@@ -127,16 +99,17 @@ class ConcreteAnalysisPipeline:
 
             print(f"\n✓ Calibration successful!")
             print(f" Method: {calibration_info.get('method', 'Unknown')}")
-            print(f" Major markings: {calibration_info.get('num_major_markings', 0)}")
-            print(f" Intervals measured: {calibration_info.get('num_intervals', 0)}")
+            print(f" Markings: {calibration_info.get('num_markings', 0)}")
+            print(f" Fundamental spacing: {calibration_info.get('fundamental_spacing_px', 0):.2f} px")
+            print(f" Major period: {calibration_info.get('major_period', 0)}")
             print(f" Pixel/mm: {calibration_info.get('pixel_per_mm', 0):.6f}")
             print("="*70)
 
             # Measurement
-            concrete_mask = self.segmentation_results['masks'].get('concrete_block')
-            if concrete_mask is not None and 'concrete_boundaries' in self.segmentation_results:
+            concrete_mask = segmentation_results['masks'].get('concrete_block')
+            if concrete_mask is not None and 'concrete_boundaries' in segmentation_results:
                 measurements = self.calibrator.measure_concrete_block(
-                    self.segmentation_results['concrete_boundaries'],
+                    segmentation_results['concrete_boundaries'],
                     concrete_mask,
                     self.preprocessed_image
                 )
@@ -172,31 +145,18 @@ class ConcreteAnalysisPipeline:
         print("\n" + "="*70)
         print("PIPELINE COMPLETE!")
         print("="*70)
-        print(f"\nOutputs saved to: {self.output_dir.absolute()}")
-        print("\nGenerated files:")
-        for f in sorted(self.output_dir.glob("*")):
-            print(f" - {f.name}")
+        print(f"\nOutputs: {self.output_dir.absolute()}")
         print()
 
 
 def main():
-    """Main entry point"""
+    import argparse
+
     parser = argparse.ArgumentParser(
-        description="Concrete Block Analysis - Direct Marking Detection"
+        description="Concrete Block Analysis - Smart Adaptive Calibration"
     )
-
-    parser.add_argument(
-        "image",
-        type=str,
-        help="Path to input image"
-    )
-
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="output",
-        help="Output directory (default: output)"
-    )
+    parser.add_argument("image", type=str, help="Path to input image")
+    parser.add_argument("--output-dir", type=str, default="output", help="Output directory")
 
     args = parser.parse_args()
 
@@ -212,23 +172,13 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         main()
     else:
-        # Interactive mode
-        print("Concrete Block Analysis Pipeline")
+        print("Concrete Block Analysis - Smart Adaptive Calibration")
         print("="*50)
-        print("\nMethod: Direct Marking Detection (no OCR)")
-        print("\nFeatures:")
-        print(" ✓ Detects ruler markings automatically")
-        print(" ✓ No external OCR libraries needed")
-        print(" ✓ Fast and reliable")
         print()
-
         image_path = input("Enter image path: ").strip()
-
         if not os.path.exists(image_path):
-            print(f"Error: File not found: {image_path}")
+            print(f"Error: File not found")
             sys.exit(1)
-
         output_dir = input("Enter output directory [output]: ").strip() or "output"
-
         pipeline = ConcreteAnalysisPipeline(output_dir=output_dir)
         pipeline.run_pipeline(image_path=image_path)

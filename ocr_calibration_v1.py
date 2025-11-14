@@ -1,12 +1,14 @@
-"""Practical Ruler Calibration - Direct Marking Detection
+"""Smart Adaptive Ruler Calibration - Pattern Learning
 
-Instead of struggling with OCR, use image processing to:
-1. Detect ruler markings (black lines on yellow background)
-2. Find regular spacing patterns
-3. Use spacing to calibrate (no text recognition needed!)
-4. Works 100% reliably on standard rulers
+Instead of hardcoding major/minor classification, let the data tell us:
 
-Key insight: You don't need OCR if you can count and measure distances!
+1. Detect ALL marking positions
+2. Analyze spacing pattern to find the repeating unit
+3. Use spacing regularity to infer calibration
+4. Adapt to any ruler format (1cm, 0.5cm, etc.)
+
+Key insight: Ruler markings have PERIODIC spacing pattern!
+If you see many equally-spaced lines, find the smallest regular interval.
 """
 
 import cv2
@@ -15,8 +17,8 @@ from typing import Dict, List, Tuple, Optional
 from scipy import signal
 
 
-class RulerCalibration:
-    """Direct ruler marking detection - No OCR needed!"""
+class SmartRulerCalibration:
+    """Adaptive calibration - learns pattern from marking positions"""
 
     def __init__(self):
         self.pixel_to_mm_ratio = None
@@ -24,13 +26,12 @@ class RulerCalibration:
         self.measurements = {}
         self.calibration_info = {}
 
-    def detect_ruler_markings(self, scale_region: np.ndarray) -> List[Tuple[int, int, str]]:
-        """Detect ruler markings by finding vertical black lines
+    def detect_all_markings(self, scale_region: np.ndarray) -> List[int]:
+        """Detect ALL ruler marking positions (no classification)
 
-        Returns: List of (x_position, y_position, marking_type)
-                 marking_type: 'major' (1cm) or 'minor' (0.2cm/0.1cm)
+        Returns: List of x-positions where markings are detected
         """
-        print("\n[Ruler Detection] Finding marking lines...")
+        print("\n[Marking Detection] Finding all marking lines...")
 
         # Convert to grayscale
         if len(scale_region.shape) == 3:
@@ -38,155 +39,168 @@ class RulerCalibration:
         else:
             gray = scale_region.copy()
 
-        # Get image dimensions
-        height, width = gray.shape
-
-        # Find vertical edges (marking lines)
-        # Use Sobel for edge detection
+        # Find vertical edges
         sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         abs_sobelx = np.abs(sobelx)
-
-        # Threshold to get strong vertical edges
-        _, edges = cv2.threshold(abs_sobelx, 50, 255, cv2.THRESH_BINARY)
+        _, edges = cv2.threshold(abs_sobelx, 30, 255, cv2.THRESH_BINARY)
         edges = edges.astype(np.uint8)
 
-        # Find columns with strong vertical lines
-        line_strength = np.sum(edges, axis=0)  # Sum across height
+        # Find columns with vertical lines
+        line_strength = np.sum(edges, axis=0)
 
-        # Smooth to find peaks (marking positions)
-        smoothed = signal.savgol_filter(line_strength, window_length=5, polyorder=2)
+        # Find peaks with smaller minimum distance (catch ALL markings)
+        peaks, _ = signal.find_peaks(line_strength, distance=3, height=20)
 
-        # Find peaks (local maxima)
-        peaks, _ = signal.find_peaks(smoothed, distance=10, height=100)
+        print(f"  ✓ Detected {len(peaks)} marking positions")
 
-        print(f"  ✓ Detected {len(peaks)} potential marking positions")
+        return sorted(peaks)
 
-        # Classify markings by height of line
-        markings = []
-        for peak_x in peaks:
-            # Get average y position (where line is strong)
-            y_positions = np.where(edges[:, peak_x] > 0)[0]
-            if len(y_positions) > 0:
-                y_center = int(np.mean(y_positions))
-                line_length = len(y_positions)
+    def analyze_spacing_pattern(self, positions: List[int]) -> Dict:
+        """Analyze spacing pattern to find repeating interval
 
-                # Major marking: line covers most of scale height
-                # Minor marking: line is shorter
-                if line_length > height * 0.6:
-                    marking_type = 'major'
-                else:
-                    marking_type = 'minor'
-
-                markings.append((peak_x, y_center, marking_type))
-
-        # Sort by x position
-        markings = sorted(markings, key=lambda x: x[0])
-
-        print(f"  ✓ Major markings (1cm): {sum(1 for m in markings if m[2] == 'major')}")
-        print(f"  ✓ Minor markings (0.2cm): {sum(1 for m in markings if m[2] == 'minor')}")
-
-        return markings
-
-    def extract_major_markings(self, markings: List[Tuple[int, int, str]]) -> List[int]:
-        """Extract major markings (1cm intervals) from all markings
-
-        Pattern: [major] [minor] [minor] [minor] [minor] [major] ...
-
-        Returns: x-positions of major markings only
+        Smart approach: Look at all consecutive spacing differences
+        Find the most common small spacing = calibration unit!
         """
-        print("\n[Filtering] Extracting major markings (1cm intervals)...")
+        print("\n[Pattern Analysis] Finding repeating spacing pattern...")
 
-        major_positions = [m[0] for m in markings if m[2] == 'major']
+        if len(positions) < 3:
+            print("  ⚠ Too few markings to analyze pattern")
+            return {}
 
-        # Verify spacing is roughly regular
-        if len(major_positions) >= 2:
-            spacings = np.diff(major_positions)
-            mean_spacing = np.mean(spacings)
-            std_spacing = np.std(spacings)
+        # Calculate all consecutive spacings
+        spacings = np.diff(positions)
 
-            print(f"  Mean spacing: {mean_spacing:.1f} pixels")
-            print(f"  Std deviation: {std_spacing:.1f} pixels")
-            print(f"  Regularity: {(1 - std_spacing/mean_spacing)*100:.1f}%")
+        print(f"  Spacings: min={spacings.min():.1f}px, "
+              f"max={spacings.max():.1f}px, "
+              f"mean={spacings.mean():.1f}px")
 
-        return major_positions
+        # Find the fundamental spacing unit
+        # Key insight: Minor markings have smallest consistent spacing
+        # Find histogram peak in spacing values
 
-    def calculate_calibration_from_markings(self, major_positions: List[int]) -> Optional[Dict]:
-        """Calculate pixel-to-cm ratio from major marking spacing
+        hist, bin_edges = np.histogram(spacings, bins=30)
+        most_common_idx = np.argmax(hist)
+        fundamental_spacing = (bin_edges[most_common_idx] + bin_edges[most_common_idx + 1]) / 2
 
-        Major markings are 1cm apart by definition
-        """
-        if len(major_positions) < 2:
-            print("✗ Not enough major markings detected!")
-            return None
+        print(f"  Fundamental spacing: {fundamental_spacing:.1f} pixels")
 
-        print("\n[Calibration] Computing pixel-to-mm ratio from marking spacing...")
+        # Analyze multiples of fundamental spacing
+        # e.g., some markings might be 2x, 3x, 5x, 10x the fundamental
+        multiples = spacings / fundamental_spacing
+        unique_multiples = np.unique(np.round(multiples, 1))
 
-        # Calculate spacing between consecutive major markings
-        spacings_px = np.diff(major_positions)
+        print(f"  Found multiples: {unique_multiples}")
 
-        print(f"  Detected {len(major_positions)} major markings")
-        print(f"  Number of 1cm intervals: {len(spacings_px)}")
+        # The actual calibration unit is likely the GCD or most common multiple
+        # For standard rulers: 1cm = 5 × 0.2cm
 
-        for i, spacing in enumerate(spacings_px):
-            print(f"    Marking {i}→{i+1}: {spacing:.1f} pixels = 1 cm")
+        # Find the metric that makes sense
+        # Standard ruler: major every 1cm (= 5 or 10 minor markings)
+        major_period = None
 
-        # Robust statistics
-        median_px_per_cm = np.median(spacings_px)
-        mean_px_per_cm = np.mean(spacings_px)
-        std_dev = np.std(spacings_px)
-        px_per_mm = median_px_per_cm / 10.0
+        # Look for periodicity - ruler usually has major marks every N minors
+        if len(unique_multiples) > 1:
+            # Common patterns: 5 (0.2cm each), 10 (0.1cm each)
+            for test_period in [5, 10, 4, 2]:
+                if test_period in unique_multiples:
+                    major_period = test_period
+                    break
 
-        # Check consistency
-        if std_dev > median_px_per_cm * 0.1:
-            print(f"  ⚠ Warning: High variance in spacing ({std_dev:.1f})")
+        if major_period is None:
+            # Default assumption: most frequent non-unit multiple is major
+            major_period = int(np.median(unique_multiples[unique_multiples > 1.5]))
 
-        calibration = {
-            'method': 'Direct marking detection (no OCR)',
-            'num_major_markings': len(major_positions),
-            'num_intervals': len(spacings_px),
-            'median_px_per_cm': median_px_per_cm,
-            'mean_px_per_cm': mean_px_per_cm,
-            'std_deviation': std_dev,
-            'pixel_per_cm': median_px_per_cm,
-            'pixel_per_mm': px_per_mm,
-            'all_spacings': spacings_px.tolist()
+        print(f"  Major marking period: every {major_period} minor markings")
+
+        # So: minor = fundamental_spacing pixels
+        # And: major = major_period × fundamental_spacing pixels
+
+        return {
+            'fundamental_spacing': fundamental_spacing,
+            'major_period': major_period,
+            'all_spacings': spacings,
+            'unique_multiples': unique_multiples
         }
 
-        print(f"\n  [Results]:")
-        print(f"    Measurements: {len(spacings_px)}")
-        print(f"    Median: {median_px_per_cm:.2f} px/cm")
-        print(f"    Mean: {mean_px_per_cm:.2f} px/cm")
-        print(f"    Std Dev: {std_dev:.2f} pixels")
-        print(f"    ✓ Calibration: {median_px_per_cm:.2f} px/cm ({px_per_mm:.6f} px/mm)")
+    def infer_calibration(self, pattern_info: Dict, positions: List[int]) -> Optional[Dict]:
+        """Infer calibration from pattern
+
+        Strategy: Assume fundamental spacing = 0.2cm or 0.1cm
+        Calculate backward to find actual dimension
+        """
+        print("\n[Calibration Inference] Computing pixel-to-mm ratio...")
+
+        if not pattern_info:
+            return None
+
+        fund_spacing = pattern_info['fundamental_spacing']
+        major_period = pattern_info['major_period']
+
+        # Major marking interval in pixels
+        major_spacing = fund_spacing * major_period
+
+        # Now we assume: major markings are 1cm apart (standard ruler)
+        # This gives us the calibration!
+
+        px_per_cm = major_spacing
+        px_per_mm = px_per_cm / 10.0
+
+        print(f"  Fundamental spacing: {fund_spacing:.2f} px")
+        print(f"  Major period: {major_period}")
+        print(f"  Major spacing: {major_spacing:.2f} px")
+        print(f"  ✓ Inferred calibration: {px_per_cm:.2f} px/cm")
+
+        # Validate: check if this makes sense
+        # Measure actual positions vs expected positions
+        expected_positions = np.arange(len(positions)) * fund_spacing + positions[0]
+        actual_positions = np.array(positions)
+
+        error = np.mean(np.abs(expected_positions - actual_positions))
+        error_pct = (error / fund_spacing) * 100
+
+        print(f"  Pattern fit error: {error_pct:.1f}%")
+
+        if error_pct > 15:
+            print(f"  ⚠ Warning: Pattern fit is poor, ruler might not be level")
+
+        calibration = {
+            'method': 'Smart Adaptive Pattern Learning',
+            'num_markings': len(positions),
+            'fundamental_spacing_px': fund_spacing,
+            'major_period': major_period,
+            'major_spacing_px': major_spacing,
+            'pixel_per_cm': px_per_cm,
+            'pixel_per_mm': px_per_mm,
+            'pattern_fit_error_pct': error_pct
+        }
 
         return calibration
 
     def auto_calibrate(self, image: np.ndarray, scale_mask: np.ndarray) -> Optional[Dict]:
-        """Main calibration without OCR"""
+        """Main calibration"""
         print("\n" + "="*70)
-        print("RULER CALIBRATION - Direct Marking Detection")
-        print("(No OCR needed!)")
+        print("SMART ADAPTIVE RULER CALIBRATION")
+        print("(Pattern Learning - Works with any ruler!)")
         print("="*70)
 
-        # Extract scale region
         scale_region = cv2.bitwise_and(image, image, mask=scale_mask)
 
-        # Detect all markings
-        markings = self.detect_ruler_markings(scale_region)
+        # Step 1: Detect ALL markings
+        positions = self.detect_all_markings(scale_region)
 
-        if not markings:
-            print("✗ Calibration failed: No markings detected")
+        if len(positions) < 3:
+            print("✗ Calibration failed: Not enough markings")
             return None
 
-        # Extract major markings
-        major_positions = self.extract_major_markings(markings)
+        # Step 2: Analyze pattern
+        pattern_info = self.analyze_spacing_pattern(positions)
 
-        if len(major_positions) < 2:
-            print("✗ Calibration failed: Need at least 2 major markings")
+        if not pattern_info:
+            print("✗ Calibration failed: Could not analyze pattern")
             return None
 
-        # Calculate calibration
-        calibration = self.calculate_calibration_from_markings(major_positions)
+        # Step 3: Infer calibration
+        calibration = self.infer_calibration(pattern_info, positions)
 
         if calibration is None:
             print("\n✗ Calibration failed")
@@ -197,7 +211,7 @@ class RulerCalibration:
         self.calibration_info = calibration
 
         print("\n" + "="*70)
-        print("✓ CALIBRATION SUCCESSFUL (No OCR needed!)")
+        print("✓ CALIBRATION SUCCESSFUL")
         print("="*70)
 
         return calibration
@@ -214,13 +228,11 @@ class RulerCalibration:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         contour = concrete_boundaries['contour']
 
-        # Sub-pixel refinement
         corners = contour.reshape(-1, 1, 2).astype(np.float32)
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.001)
         refined_contour = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
         refined_contour = refined_contour.reshape(-1, 2)
 
-        # Dimensions
         area_px = cv2.contourArea(refined_contour)
         perimeter_px = cv2.arcLength(refined_contour, closed=True)
 
@@ -229,7 +241,6 @@ class RulerCalibration:
         width_px = np.max(x_coords) - np.min(x_coords)
         height_px = np.max(y_coords) - np.min(y_coords)
 
-        # Convert to physical units
         width_mm = width_px / self.pixel_to_mm_ratio
         height_mm = height_px / self.pixel_to_mm_ratio
         area_mm2 = area_px / (self.pixel_to_mm_ratio ** 2)
@@ -323,7 +334,7 @@ class RulerCalibration:
         """Generate report"""
         report_lines = [
             "="*70,
-            "RULER CALIBRATION REPORT - Direct Marking Detection",
+            "SMART ADAPTIVE RULER CALIBRATION REPORT",
             "="*70,
             ""
         ]
@@ -332,10 +343,13 @@ class RulerCalibration:
             report_lines.extend([
                 "CALIBRATION:",
                 f"  Method: {self.calibration_info['method']}",
-                f"  Major markings detected: {self.calibration_info['num_major_markings']}",
-                f"  Intervals measured: {self.calibration_info['num_intervals']}",
-                f"  Median spacing: {self.calibration_info['median_px_per_cm']:.2f} px/cm",
+                f"  Markings detected: {self.calibration_info['num_markings']}",
+                f"  Fundamental spacing: {self.calibration_info['fundamental_spacing_px']:.2f} px",
+                f"  Major period: {self.calibration_info['major_period']}",
+                f"  Major spacing: {self.calibration_info['major_spacing_px']:.2f} px",
+                f"  Pixel/cm: {self.calibration_info['pixel_per_cm']:.2f}",
                 f"  Pixel/mm: {self.calibration_info['pixel_per_mm']:.6f}",
+                f"  Pattern fit error: {self.calibration_info['pattern_fit_error_pct']:.1f}%",
                 ""
             ])
 
