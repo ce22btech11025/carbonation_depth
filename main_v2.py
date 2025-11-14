@@ -22,7 +22,7 @@ from pathlib import Path
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1 import OCRCalibration
+    from ocr_calibration_v1 import RulerCalibration
 except ImportError as e:
     print(f"Error importing modules: {e}")
     print("Make sure all module files are in the same directory.")
