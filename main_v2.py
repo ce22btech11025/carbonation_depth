@@ -2,6 +2,7 @@
 UPDATED Main Pipeline - ADVANCED PRECISION CALIBRATION
 
 Uses enhanced sub-pixel refinement + iterative RANSAC + cross-validation
+
 Achieves 3-5x improvement over standard approach
 
 Pipeline:
@@ -27,7 +28,6 @@ try:
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
-
 
 class ConcreteAnalysisPipeline:
     """Analysis pipeline with ADVANCED precision calibration"""
@@ -90,6 +90,7 @@ class ConcreteAnalysisPipeline:
 
         device_info = self.segmenter.get_device_info()
         print(f"Device: {device_info['device'].upper()}")
+
         if device_info['device'] == 'cuda':
             print(f"GPU: {device_info['device_name']}")
             print(f"Memory: {device_info['memory_gb']:.2f} GB")
@@ -110,7 +111,7 @@ class ConcreteAnalysisPipeline:
 
                 for name, mask in segmentation_results.get('masks', {}).items():
                     cv2.imwrite(
-                        str(self.output_dir / f"mask_{name}.jpg"), 
+                        str(self.output_dir / f"mask_{name}.jpg"),
                         mask
                     )
 
@@ -128,10 +129,10 @@ class ConcreteAnalysisPipeline:
             self.results['segmentation'] = {'status': 'failed', 'error': str(e)}
             return None
 
-    def stage_3_advanced_calibration(self, 
-                                    preprocessed_image: np.ndarray,
-                                    scale_mask: np.ndarray,
-                                    least_count_mm: float = 2.0) -> Optional[Dict]:
+    def stage_3_advanced_calibration(self,
+                                     preprocessed_image: np.ndarray,
+                                     scale_mask: np.ndarray,
+                                     least_count_mm: float = 2.0) -> Optional[Dict]:
         """Stage 3: ADVANCED Calibration with Multiple Techniques"""
         self._print_header("STAGE 3: ADVANCED PRECISION CALIBRATION")
         print("-" * 70)
@@ -144,10 +145,9 @@ class ConcreteAnalysisPipeline:
         print("✓ Uncertainty propagation")
 
         try:
-            calibration_info = self.calibrator.auto_calibrate(
+            calibration_info = self.calibrator.auto_calibrate_advanced(
                 preprocessed_image,
-                scale_mask,
-                least_count_mm=least_count_mm
+                scale_mask
             )
 
             if calibration_info is None:
@@ -156,13 +156,11 @@ class ConcreteAnalysisPipeline:
 
             # Print calibration summary
             print(f"\n✓ CALIBRATION SUCCESSFUL")
-            print(f" Method: {calibration_info.get('method', 'Unknown')}")
             print(f" Markings detected: {calibration_info.get('num_markings', 0)}")
-            print(f" Spacing: {calibration_info.get('spacing_px', 0):.4f} px per mark")
             print(f" Pixel-to-MM: {calibration_info.get('pixel_per_mm', 0):.6f}")
             print(f" Pixel-to-CM: {calibration_info.get('pixel_per_cm', 0):.6f}")
-            print(f" Precision: ±{calibration_info.get('precision_pct', 0):.4f}%")
-            print(f" Inlier ratio: {calibration_info.get('inlier_ratio', 0)*100:.1f}%")
+            print(f" Method agreement: {calibration_info.get('validation_agreement', 0):.2f}%")
+            print(f" Uncertainty: ±{calibration_info.get('uncertainty_mm', 0):.4f} mm")
             print("="*70)
 
             self.results['calibration'] = calibration_info
@@ -175,7 +173,7 @@ class ConcreteAnalysisPipeline:
             self.results['calibration'] = {'status': 'failed', 'error': str(e)}
             return None
 
-    def stage_4_measurement(self, 
+    def stage_4_measurement(self,
                            preprocessed_image: np.ndarray,
                            segmentation_results: Dict) -> Optional[Dict]:
         """Stage 4: Precision Measurement with Uncertainty"""
@@ -184,39 +182,31 @@ class ConcreteAnalysisPipeline:
 
         try:
             concrete_mask = segmentation_results['masks'].get('concrete_block')
-
-            if concrete_mask is None or 'concrete_boundaries' not in segmentation_results:
+            if concrete_mask is None:
                 print("⚠ Concrete block not detected")
                 return None
 
             # Measure concrete block
             print("\n[Measurement] Computing block dimensions...")
-            measurements = self.calibrator.measure_concrete_block(
-                segmentation_results['concrete_boundaries'],
+            measurements = self.calibrator.measure_concrete_block_with_uncertainty(
                 concrete_mask,
                 preprocessed_image
             )
 
-            # Analyze phenophthalein coverage
-            print("\n[Analysis] Analyzing phenophthalein coverage...")
-            area_analysis = self.calibrator.get_affected_area(
-                preprocessed_image,
-                concrete_mask
-            )
+            if measurements is None:
+                print("⚠ Measurement failed")
+                return None
 
             # Create visualization
             print("\n[Visualization] Creating analysis visualization...")
             vis_image = self.calibrator.create_measurement_visualization(
                 preprocessed_image,
                 concrete_mask,
-                area_analysis['magenta_mask'],
                 output_path=str(self.output_dir / "03_final_analysis.jpg")
             )
 
             # Store results
             self.results['measurements'] = measurements
-            self.results['analysis'] = area_analysis
-
             print("\n✓ Stage 4 complete")
             return measurements
 
@@ -233,7 +223,7 @@ class ConcreteAnalysisPipeline:
         print("-" * 70)
 
         try:
-            report = self.calibrator.generate_report(
+            report = self.calibrator.generate_advanced_report(
                 output_path=str(self.output_dir / "analysis_report.txt")
             )
 
@@ -243,25 +233,20 @@ class ConcreteAnalysisPipeline:
             json_path = str(self.output_dir / "results.json")
             with open(json_path, 'w') as f:
                 json.dump(self.results, f, indent=2, default=str)
+
             print(f"\n✓ JSON results saved to {json_path}")
 
             # Print summary statistics
             self._print_subheader("ANALYSIS SUMMARY")
-
             if self.results.get('calibration', {}).get('status') != 'failed':
                 calib = self.results['calibration']
-                print(f"Calibration Precision: ±{calib.get('precision_pct', 0):.4f}%")
+                print(f"Calibration Uncertainty: ±{calib.get('uncertainty_mm', 0):.4f} mm")
 
             if self.results.get('measurements', {}).get('status') != 'failed':
                 meas = self.results['measurements']
-                print(f"Block Width: {meas.get('width_cm', 0):.2f} cm")
-                print(f"Block Height: {meas.get('height_cm', 0):.2f} cm")
+                print(f"Block Width: {meas.get('width_mm', 0):.2f} mm")
+                print(f"Block Height: {meas.get('height_mm', 0):.2f} mm")
                 print(f"Block Area: {meas.get('area_cm2', 0):.2f} cm²")
-
-            if self.results.get('analysis', {}).get('status') != 'failed':
-                ana = self.results['analysis']
-                print(f"Phenophthalein Coverage: {ana.get('affected_percentage', 0):.2f}%")
-                print(f"Affected Area: {ana.get('affected_cm2', 0):.2f} cm²")
 
             print("✓ Stage 5 complete")
             return report
@@ -272,8 +257,8 @@ class ConcreteAnalysisPipeline:
             traceback.print_exc()
             return ""
 
-    def run_pipeline(self, 
-                    image_path: str, 
+    def run_pipeline(self,
+                    image_path: str,
                     least_count_mm: float = 2.0) -> bool:
         """
         Run complete analysis pipeline
@@ -285,10 +270,9 @@ class ConcreteAnalysisPipeline:
         Returns:
             Success status
         """
-
         self._print_header("CONCRETE BLOCK ANALYSIS - ADVANCED PRECISION CALIBRATION")
         print("Advanced techniques: Ensemble Edge Detection + Hessian Refinement")
-        print("                    Iterative RANSAC + Cross-Validation")
+        print(" Iterative RANSAC + Cross-Validation")
         print(f"\nInput image: {image_path}")
         print(f"Output directory: {self.output_dir.absolute()}")
 
@@ -313,6 +297,7 @@ class ConcreteAnalysisPipeline:
             scale_mask,
             least_count_mm=least_count_mm
         )
+
         if calibration_info is None:
             return False
 
@@ -329,12 +314,10 @@ class ConcreteAnalysisPipeline:
         print(f"\nAll outputs saved to: {self.output_dir.absolute()}")
         print(f"\nGenerated files:")
         for file in sorted(self.output_dir.glob("*")):
-            print(f"  ✓ {file.name}")
-
+            print(f" ✓ {file.name}")
         print("\n" + "="*70)
 
         return True
-
 
 def main():
     """Main entry point with argument parsing"""
@@ -352,8 +335,8 @@ Examples:
 
     parser.add_argument("image", type=str, help="Path to input image")
     parser.add_argument(
-        "--output-dir", 
-        type=str, 
+        "--output-dir",
+        type=str,
         default="output",
         help="Output directory (default: output)"
     )
@@ -378,7 +361,6 @@ Examples:
 
     sys.exit(0 if success else 1)
 
-
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         main()
@@ -389,14 +371,13 @@ if __name__ == "__main__":
         print()
 
         image_path = input("Enter image path: ").strip()
-
         if not os.path.exists(image_path):
             print(f"Error: File not found")
             sys.exit(1)
 
         output_dir = input("Enter output directory [output]: ").strip() or "output"
-
         least_count_str = input("Enter ruler marking spacing in mm [2.0]: ").strip()
+
         try:
             least_count = float(least_count_str) if least_count_str else 2.0
         except ValueError:
