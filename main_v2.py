@@ -1,14 +1,13 @@
 """
-UPDATED Main Pipeline - ADVANCED PRECISION CALIBRATION
+UPDATED Main Pipeline - SIMPLIFIED ROBUST CALIBRATION
 
-Uses enhanced sub-pixel refinement + iterative RANSAC + cross-validation
-
-Achieves 3-5x improvement over standard approach
+Uses simplified marking detection to get accurate pixel-to-mm ratio
+Focuses on actual ruler markings, not noise/artifacts
 
 Pipeline:
 1. Image Preprocessing
 2. GPU-Accelerated Segmentation (SAM2)
-3. Advanced Calibration (Ensemble Edge Detection + Hessian Refinement + Iterative RANSAC)
+3. Simplified Robust Calibration (Strict line filtering + Clustering)
 4. Precision Measurement with Uncertainty Estimation
 5. Comprehensive Reporting
 """
@@ -24,13 +23,13 @@ import numpy as np
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1 import AdvancedCalibrationMeasurement
+    from ocr_calibration_v2 import AdvancedCalibrationMeasurement
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
 
 class ConcreteAnalysisPipeline:
-    """Analysis pipeline with ADVANCED precision calibration"""
+    """Analysis pipeline with simplified robust calibration"""
 
     def __init__(self, output_dir: str = "output"):
         self.output_dir = Path(output_dir)
@@ -129,20 +128,19 @@ class ConcreteAnalysisPipeline:
             self.results['segmentation'] = {'status': 'failed', 'error': str(e)}
             return None
 
-    def stage_3_advanced_calibration(self,
-                                     preprocessed_image: np.ndarray,
-                                     scale_mask: np.ndarray,
-                                     least_count_mm: float = 2.0) -> Optional[Dict]:
-        """Stage 3: ADVANCED Calibration with Multiple Techniques"""
-        self._print_header("STAGE 3: ADVANCED PRECISION CALIBRATION")
+    def stage_3_robust_calibration(self,
+                                   preprocessed_image: np.ndarray,
+                                   scale_mask: np.ndarray) -> Optional[Dict]:
+        """Stage 3: Simplified Robust Calibration"""
+        self._print_header("STAGE 3: SIMPLIFIED ROBUST CALIBRATION")
         print("-" * 70)
 
-        self._print_subheader("Multiple Refinement Techniques")
-        print("✓ Ensemble edge detection (Canny + Sobel + Laplacian)")
-        print("✓ Hessian-based sub-pixel refinement")
-        print("✓ Iterative RANSAC (3 passes with progressively tighter thresholds)")
-        print("✓ Cross-validation (3 independent methods)")
-        print("✓ Uncertainty propagation")
+        self._print_subheader("Calibration Techniques")
+        print("✓ Simple edge detection (focus on strong edges only)")
+        print("✓ Strict vertical line filtering")
+        print("✓ Clustering to merge false positives")
+        print("✓ Spacing consistency validation")
+        print("✓ Aggressive outlier removal")
 
         try:
             calibration_info = self.calibrator.auto_calibrate_advanced(
@@ -151,17 +149,8 @@ class ConcreteAnalysisPipeline:
             )
 
             if calibration_info is None:
-                print("\n✗ Advanced calibration failed!")
+                print("\n✗ Calibration failed!")
                 return None
-
-            # Print calibration summary
-            print(f"\n✓ CALIBRATION SUCCESSFUL")
-            print(f" Markings detected: {calibration_info.get('num_markings', 0)}")
-            print(f" Pixel-to-MM: {calibration_info.get('pixel_per_mm', 0):.6f}")
-            print(f" Pixel-to-CM: {calibration_info.get('pixel_per_cm', 0):.6f}")
-            print(f" Method agreement: {calibration_info.get('validation_agreement', 0):.2f}%")
-            print(f" Uncertainty: ±{calibration_info.get('uncertainty_mm', 0):.4f} mm")
-            print("="*70)
 
             self.results['calibration'] = calibration_info
             return calibration_info
@@ -240,15 +229,18 @@ class ConcreteAnalysisPipeline:
             self._print_subheader("ANALYSIS SUMMARY")
             if self.results.get('calibration', {}).get('status') != 'failed':
                 calib = self.results['calibration']
+                print(f"Pixel/CM: {calib.get('pixel_per_cm', 0):.2f}")
+                print(f"Pixel/MM: {calib.get('pixel_per_mm', 0):.6f}")
+                print(f"Markings: {calib.get('num_markings', 0)}")
                 print(f"Calibration Uncertainty: ±{calib.get('uncertainty_mm', 0):.4f} mm")
 
             if self.results.get('measurements', {}).get('status') != 'failed':
                 meas = self.results['measurements']
-                print(f"Block Width: {meas.get('width_mm', 0):.2f} mm")
+                print(f"\nBlock Width: {meas.get('width_mm', 0):.2f} mm")
                 print(f"Block Height: {meas.get('height_mm', 0):.2f} mm")
                 print(f"Block Area: {meas.get('area_cm2', 0):.2f} cm²")
 
-            print("✓ Stage 5 complete")
+            print("\n✓ Stage 5 complete")
             return report
 
         except Exception as e:
@@ -258,21 +250,18 @@ class ConcreteAnalysisPipeline:
             return ""
 
     def run_pipeline(self,
-                    image_path: str,
-                    least_count_mm: float = 2.0) -> bool:
+                    image_path: str) -> bool:
         """
         Run complete analysis pipeline
 
         Args:
             image_path: Path to input image
-            least_count_mm: Physical marking spacing in mm (typically 2.0)
 
         Returns:
             Success status
         """
-        self._print_header("CONCRETE BLOCK ANALYSIS - ADVANCED PRECISION CALIBRATION")
-        print("Advanced techniques: Ensemble Edge Detection + Hessian Refinement")
-        print(" Iterative RANSAC + Cross-Validation")
+        self._print_header("CONCRETE BLOCK ANALYSIS - ROBUST CALIBRATION")
+        print("Simplified approach for accurate pixel-to-mm calibration")
         print(f"\nInput image: {image_path}")
         print(f"Output directory: {self.output_dir.absolute()}")
 
@@ -286,16 +275,15 @@ class ConcreteAnalysisPipeline:
         if segmentation_results is None:
             return False
 
-        # Stage 3: Advanced Calibration
+        # Stage 3: Robust Calibration
         scale_mask = segmentation_results.get('masks', {}).get('scale')
         if scale_mask is None:
             print("✗ No scale detected!")
             return False
 
-        calibration_info = self.stage_3_advanced_calibration(
+        calibration_info = self.stage_3_robust_calibration(
             preprocessed_image,
-            scale_mask,
-            least_count_mm=least_count_mm
+            scale_mask
         )
 
         if calibration_info is None:
@@ -324,12 +312,12 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Concrete Block Analysis - Advanced Precision Calibration",
+        description="Concrete Block Analysis - Robust Calibration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python main_v2.py image.jpg
-  python main_v2.py image.jpg --output-dir results --least-count 2.0
+  python main_v2.py image.jpg --output-dir results
         """
     )
 
@@ -340,12 +328,6 @@ Examples:
         default="output",
         help="Output directory (default: output)"
     )
-    parser.add_argument(
-        "--least-count",
-        type=float,
-        default=2.0,
-        help="Ruler marking spacing in mm (default: 2.0)"
-    )
 
     args = parser.parse_args()
 
@@ -354,10 +336,7 @@ Examples:
         sys.exit(1)
 
     pipeline = ConcreteAnalysisPipeline(output_dir=args.output_dir)
-    success = pipeline.run_pipeline(
-        image_path=args.image,
-        least_count_mm=args.least_count
-    )
+    success = pipeline.run_pipeline(image_path=args.image)
 
     sys.exit(0 if success else 1)
 
@@ -366,7 +345,7 @@ if __name__ == "__main__":
         main()
     else:
         # Interactive mode
-        print("Concrete Block Analysis - Advanced Precision Calibration")
+        print("Concrete Block Analysis - Robust Calibration")
         print("="*60)
         print()
 
@@ -376,17 +355,8 @@ if __name__ == "__main__":
             sys.exit(1)
 
         output_dir = input("Enter output directory [output]: ").strip() or "output"
-        least_count_str = input("Enter ruler marking spacing in mm [2.0]: ").strip()
-
-        try:
-            least_count = float(least_count_str) if least_count_str else 2.0
-        except ValueError:
-            least_count = 2.0
 
         pipeline = ConcreteAnalysisPipeline(output_dir=output_dir)
-        success = pipeline.run_pipeline(
-            image_path=image_path,
-            least_count_mm=least_count
-        )
+        success = pipeline.run_pipeline(image_path=image_path)
 
         sys.exit(0 if success else 1)
