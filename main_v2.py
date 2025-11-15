@@ -11,7 +11,7 @@ from pathlib import Path
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1 import PrecisionRulerCalibration
+    from ocr_calibration_v1 import AdvancedCalibrationMeasurement
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
@@ -26,7 +26,7 @@ class ConcreteAnalysisPipeline:
 
         self.preprocessor = ImagePreprocessor()
         self.segmenter = SegmentationModule()
-        self.calibrator = PrecisionRulerCalibration()
+        self.calibrator = AdvancedCalibrationMeasurement()
 
     def run_pipeline(self, image_path: str, least_count_mm: float = 2.0):
         """Run complete analysis
