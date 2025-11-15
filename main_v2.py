@@ -23,7 +23,7 @@ import numpy as np
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v3 import AdvancedCalibrationMeasurement
+    from ocr_calibration_v1 import AdvancedCalibrationMeasurement
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
