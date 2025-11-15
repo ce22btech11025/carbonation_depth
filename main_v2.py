@@ -1,15 +1,15 @@
 """
-UPDATED Main Pipeline - SIMPLIFIED ROBUST CALIBRATION
+MAIN PIPELINE - ADAPTIVE CALIBRATION v3
 
-Uses simplified marking detection to get accurate pixel-to-mm ratio
-Focuses on actual ruler markings, not noise/artifacts
+Uses multiple detection strategies to handle various scale/ruler configurations
+Automatically falls back to next strategy if current one fails
 
 Pipeline:
 1. Image Preprocessing
 2. GPU-Accelerated Segmentation (SAM2)
-3. Simplified Robust Calibration (Strict line filtering + Clustering)
-4. Precision Measurement with Uncertainty Estimation
-5. Comprehensive Reporting
+3. Adaptive Calibration (Contour → Projection → Manual Threshold)
+4. Precision Measurement
+5. Reporting
 """
 
 import cv2
@@ -17,19 +17,19 @@ import os
 import sys
 import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 import numpy as np
 
 try:
     from image_preprocessor import ImagePreprocessor
     from segmentation_module import SegmentationModule
-    from ocr_calibration_v1 import AdvancedCalibrationMeasurement
+    from ocr_calibration_v3 import AdvancedCalibrationMeasurement
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)
 
 class ConcreteAnalysisPipeline:
-    """Analysis pipeline with simplified robust calibration"""
+    """Analysis pipeline with adaptive calibration"""
 
     def __init__(self, output_dir: str = "output"):
         self.output_dir = Path(output_dir)
@@ -38,7 +38,6 @@ class ConcreteAnalysisPipeline:
         self.segmenter = SegmentationModule()
         self.calibrator = AdvancedCalibrationMeasurement()
 
-        # Results storage
         self.results = {
             'preprocessing': None,
             'segmentation': None,
@@ -100,7 +99,6 @@ class ConcreteAnalysisPipeline:
                 preprocessed_image
             )
 
-            # Save masks
             if segmentation_results.get('masks'):
                 self.segmenter.visualize_segmentation(
                     preprocessed_image,
@@ -128,19 +126,18 @@ class ConcreteAnalysisPipeline:
             self.results['segmentation'] = {'status': 'failed', 'error': str(e)}
             return None
 
-    def stage_3_robust_calibration(self,
-                                   preprocessed_image: np.ndarray,
-                                   scale_mask: np.ndarray) -> Optional[Dict]:
-        """Stage 3: Simplified Robust Calibration"""
-        self._print_header("STAGE 3: SIMPLIFIED ROBUST CALIBRATION")
+    def stage_3_adaptive_calibration(self,
+                                     preprocessed_image: np.ndarray,
+                                     scale_mask: np.ndarray) -> Optional[Dict]:
+        """Stage 3: Adaptive Calibration with Multiple Strategies"""
+        self._print_header("STAGE 3: ADAPTIVE CALIBRATION")
         print("-" * 70)
 
-        self._print_subheader("Calibration Techniques")
-        print("✓ Simple edge detection (focus on strong edges only)")
-        print("✓ Strict vertical line filtering")
-        print("✓ Clustering to merge false positives")
-        print("✓ Spacing consistency validation")
-        print("✓ Aggressive outlier removal")
+        self._print_subheader("Multiple Detection Strategies")
+        print("✓ Strategy 1: Contour-based marking detection")
+        print("✓ Strategy 2: Projection-based peak detection")
+        print("✓ Strategy 3: Manual threshold detection")
+        print("✓ Automatic fallback between strategies")
 
         try:
             calibration_info = self.calibrator.auto_calibrate_advanced(
@@ -165,7 +162,7 @@ class ConcreteAnalysisPipeline:
     def stage_4_measurement(self,
                            preprocessed_image: np.ndarray,
                            segmentation_results: Dict) -> Optional[Dict]:
-        """Stage 4: Precision Measurement with Uncertainty"""
+        """Stage 4: Precision Measurement"""
         self._print_header("STAGE 4: PRECISION MEASUREMENT")
         print("-" * 70)
 
@@ -175,7 +172,6 @@ class ConcreteAnalysisPipeline:
                 print("⚠ Concrete block not detected")
                 return None
 
-            # Measure concrete block
             print("\n[Measurement] Computing block dimensions...")
             measurements = self.calibrator.measure_concrete_block_with_uncertainty(
                 concrete_mask,
@@ -186,7 +182,6 @@ class ConcreteAnalysisPipeline:
                 print("⚠ Measurement failed")
                 return None
 
-            # Create visualization
             print("\n[Visualization] Creating analysis visualization...")
             vis_image = self.calibrator.create_measurement_visualization(
                 preprocessed_image,
@@ -194,7 +189,6 @@ class ConcreteAnalysisPipeline:
                 output_path=str(self.output_dir / "03_final_analysis.jpg")
             )
 
-            # Store results
             self.results['measurements'] = measurements
             print("\n✓ Stage 4 complete")
             return measurements
@@ -207,7 +201,7 @@ class ConcreteAnalysisPipeline:
             return None
 
     def stage_5_reporting(self) -> str:
-        """Stage 5: Generate Comprehensive Report"""
+        """Stage 5: Generate Report"""
         self._print_header("STAGE 5: COMPREHENSIVE REPORTING")
         print("-" * 70)
 
@@ -218,27 +212,21 @@ class ConcreteAnalysisPipeline:
 
             print("\n" + report)
 
-            # Save JSON results
             json_path = str(self.output_dir / "results.json")
             with open(json_path, 'w') as f:
                 json.dump(self.results, f, indent=2, default=str)
 
             print(f"\n✓ JSON results saved to {json_path}")
 
-            # Print summary statistics
             self._print_subheader("ANALYSIS SUMMARY")
             if self.results.get('calibration', {}).get('status') != 'failed':
                 calib = self.results['calibration']
                 print(f"Pixel/CM: {calib.get('pixel_per_cm', 0):.2f}")
-                print(f"Pixel/MM: {calib.get('pixel_per_mm', 0):.6f}")
                 print(f"Markings: {calib.get('num_markings', 0)}")
-                print(f"Calibration Uncertainty: ±{calib.get('uncertainty_mm', 0):.4f} mm")
 
             if self.results.get('measurements', {}).get('status') != 'failed':
                 meas = self.results['measurements']
-                print(f"\nBlock Width: {meas.get('width_mm', 0):.2f} mm")
-                print(f"Block Height: {meas.get('height_mm', 0):.2f} mm")
-                print(f"Block Area: {meas.get('area_cm2', 0):.2f} cm²")
+                print(f"\nBlock Area: {meas.get('area_cm2', 0):.2f} cm²")
 
             print("\n✓ Stage 5 complete")
             return report
@@ -249,39 +237,31 @@ class ConcreteAnalysisPipeline:
             traceback.print_exc()
             return ""
 
-    def run_pipeline(self,
-                    image_path: str) -> bool:
-        """
-        Run complete analysis pipeline
-
-        Args:
-            image_path: Path to input image
-
-        Returns:
-            Success status
-        """
-        self._print_header("CONCRETE BLOCK ANALYSIS - ROBUST CALIBRATION")
-        print("Simplified approach for accurate pixel-to-mm calibration")
+    def run_pipeline(self, image_path: str) -> bool:
+        """Run complete pipeline"""
+        
+        self._print_header("CONCRETE BLOCK ANALYSIS - ADAPTIVE CALIBRATION v3")
+        print("Handles various ruler/scale configurations automatically")
         print(f"\nInput image: {image_path}")
         print(f"Output directory: {self.output_dir.absolute()}")
 
-        # Stage 1: Preprocessing
+        # Stage 1
         preprocessed_image = self.stage_1_preprocessing(image_path)
         if preprocessed_image is None:
             return False
 
-        # Stage 2: Segmentation
+        # Stage 2
         segmentation_results = self.stage_2_segmentation(preprocessed_image)
         if segmentation_results is None:
             return False
 
-        # Stage 3: Robust Calibration
+        # Stage 3
         scale_mask = segmentation_results.get('masks', {}).get('scale')
         if scale_mask is None:
             print("✗ No scale detected!")
             return False
 
-        calibration_info = self.stage_3_robust_calibration(
+        calibration_info = self.stage_3_adaptive_calibration(
             preprocessed_image,
             scale_mask
         )
@@ -289,15 +269,15 @@ class ConcreteAnalysisPipeline:
         if calibration_info is None:
             return False
 
-        # Stage 4: Measurement
+        # Stage 4
         measurements = self.stage_4_measurement(preprocessed_image, segmentation_results)
         if measurements is None:
             return False
 
-        # Stage 5: Reporting
+        # Stage 5
         report = self.stage_5_reporting()
 
-        # Final summary
+        # Final
         self._print_header("PIPELINE COMPLETE")
         print(f"\nAll outputs saved to: {self.output_dir.absolute()}")
         print(f"\nGenerated files:")
@@ -308,17 +288,11 @@ class ConcreteAnalysisPipeline:
         return True
 
 def main():
-    """Main entry point with argument parsing"""
+    """Main entry point"""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Concrete Block Analysis - Robust Calibration",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python main_v2.py image.jpg
-  python main_v2.py image.jpg --output-dir results
-        """
+        description="Concrete Block Analysis - Adaptive Calibration"
     )
 
     parser.add_argument("image", type=str, help="Path to input image")
@@ -344,8 +318,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         main()
     else:
-        # Interactive mode
-        print("Concrete Block Analysis - Robust Calibration")
+        print("Concrete Block Analysis - Adaptive Calibration v3")
         print("="*60)
         print()
 
